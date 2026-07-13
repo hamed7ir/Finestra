@@ -1,0 +1,33 @@
+MODIFICATION NOTICE — FreeRDP / WinPR  (Apache License 2.0, Section 4(b))
+
+The bundled RDP engine (wfreerdp.exe, all three architectures) is built from
+FreeRDP release 3.28.0 WITH MODIFICATIONS. The modified files carry prominent
+notice via this statement and the patch files listed below (shipped in the
+source repository, which is the GPL-3 source offer for this application):
+
+  1. WinPR internal-SSPI package-index dispatch fix
+     Files: winpr/libwinpr/sspi/sspi.h, winpr/libwinpr/sspi/sspi_winpr.c,
+            winpr/libwinpr/sspi/NTLM/ntlm.c, winpr/libwinpr/sspi/Negotiate/negotiate.c
+     The internal SSPI stored the security-package name in the context handle's
+     upper pointer with MIXED character width (WCHAR vs char), so UNICODE builds
+     with WITH_NATIVE_SSPI=OFF failed NLA with SEC_E_SECPKG_NOT_FOUND. The fix
+     replaces the name-in-pointer scheme with a width-agnostic package INDEX.
+     Patch: port/winpr-sspi-package-index.patch
+
+  2. Windows client: embedding + live stats/control pipe
+     Files: client/Windows/wf_client.c, client/Windows/wf_event.c,
+            client/Windows/wf_event.h
+     Adds /parent-window child-embedding behavior fixes and a per-PID local
+     named pipe (\\.\pipe\finestrardp.<pid>) that reports live RTT/bandwidth
+     from FreeRDP's autodetect and accepts PAUSE/RESUME (suppress-output).
+     Patch: port/wfclient-parent-window-stats-pipe.patch
+
+  3. Build configuration
+     File: CMakeLists.txt
+     Adds a WIN81 target case (WINVER/_WIN32_WINNT=0x0603) for the Windows
+     RT 8.1 floor and related build-configuration adjustments.
+     Patches: port/build-config.patch (current tree state),
+              port/win81-winver.patch (the original WIN81 case)
+
+Source offer: https://github.com/hamed7ir/Finestra
+FreeRDP upstream: https://github.com/FreeRDP/FreeRDP  (Apache-2.0)

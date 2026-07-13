@@ -8,9 +8,11 @@ x86 and x64** from one universal AnyCPU build. The RDP engine is a ported, modif
 **FreeRDP 3.28.0** cross-compiled for all three architectures.
 
 <p align="center">
-  <img src="docs/manager.png" width="640" alt="Connection manager"><br>
-  <img src="docs/session-tabs.png" width="640" alt="Tabbed sessions"><br>
-  <img src="docs/about.png" width="320" alt="About">
+<img width="1012" height="689" alt="manager" src="https://github.com/user-attachments/assets/c9a65e30-c8c4-4cf0-a31d-81371c11dff6" />
+<img width="1280" height="677" alt="session-tabs2" src="https://github.com/user-attachments/assets/ade51834-526a-4f88-b276-725e538fe440" />
+
+
+
 </p>
 
 ## Features

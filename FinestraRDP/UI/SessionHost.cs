@@ -300,6 +300,36 @@ namespace Finestra.UI
         {
             base.OnActivated(e);
             _lastActiveHost = this;
+            // FIN-SINGLETON trap 2 (one-shot): our TopMost was dropped so an activated manager could
+            // genuinely surface over this fullscreen host — re-assert it now that the user returned here.
+            // ONE-SHOT by flag so the fullscreen modal-confirm dance (which also drops TopMost) is untouched.
+            if (_reassertTopMost)
+            {
+                _reassertTopMost = false;
+                if (_fullscreen && !IsDisposed) { try { TopMost = true; KeepBarOnTop(); } catch { } }
+            }
+        }
+
+        // FIN-SINGLETON — set when the manager activation dropped this fullscreen host's TopMost.
+        private bool _reassertTopMost;
+
+        /// <summary>FIN-SINGLETON trap 2: a fullscreen host is TopMost, so an activated manager would surface
+        /// BEHIND it and the icon click would look dead. Drop TopMost on every fullscreen host (sessions,
+        /// tabs, z-order among hosts untouched); each re-asserts one-shot on its next activation.</summary>
+        public static void DropFullscreenTopMostForManager()
+        {
+            foreach (var h in _allHosts.ToArray())
+                try { if (!h.IsDisposed && h._fullscreen && h.TopMost) { h.TopMost = false; h._reassertTopMost = true; } } catch { }
+        }
+
+        /// <summary>FIN-SINGLETON — activation fallback target if the manager is somehow gone: the most
+        /// recently active live host, else any live host, else null.</summary>
+        public static Form LastActiveOrAny()
+        {
+            if (_lastActiveHost != null && !_lastActiveHost.IsDisposed) return _lastActiveHost;
+            for (int i = _allHosts.Count - 1; i >= 0; i--)
+                if (!_allHosts[i].IsDisposed) return _allHosts[i];
+            return null;
         }
 
         // ── sessions ────────────────────────────────────────────────────────────

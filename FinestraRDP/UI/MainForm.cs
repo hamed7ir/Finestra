@@ -387,6 +387,28 @@ namespace Finestra.UI
             Close();
         }
 
+        /// <summary>FIN-SINGLETON — a second launch signaled us: surface the manager. Shows it if hidden
+        /// (including hidden-to-tray), un-minimizes via SW_RESTORE (returns to the PRE-minimize state —
+        /// a Maximized window stays Maximized, unlike RestoreFromTray's forced Normal), then takes
+        /// foreground (the exiting second instance granted us AllowSetForegroundWindow). Session hosts
+        /// are untouched — except a fullscreen host's TopMost is dropped (one-shot, re-asserted on its
+        /// next activation) so the manager is GENUINELY visible, not buried behind the topmost session.</summary>
+        public void ActivateFromSecondInstance()
+        {
+            try
+            {
+                _allowVisible = true;
+                if (!Visible) { ShowInTaskbar = true; Show(); }
+                if (WindowState == FormWindowState.Minimized) ShowWindowNative(Handle, SW_RESTORE);
+                SessionHost.DropFullscreenTopMostForManager();
+                Activate();
+                BringToFront();
+                SetForegroundWindow(Handle);
+                FileLog.Line("[SINGLETON] manager activated by a second launch");
+            }
+            catch { /* activation is best-effort — never take the app down for it */ }
+        }
+
         // ── close behavior: Ask / MinimizeToTray / Exit, with a live-session guard (FRDP-POLISH) ──
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
@@ -483,8 +505,11 @@ namespace Finestra.UI
         }
 
         private const int MONITOR_DEFAULTTONEAREST = 2;
+        private const int SW_RESTORE = 9;   // FIN-SINGLETON — restores to the pre-minimize state (Normal OR Maximized)
         [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr hwnd, int flags);
         [DllImport("user32.dll")] private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+        [DllImport("user32.dll", EntryPoint = "ShowWindow")] private static extern bool ShowWindowNative(IntPtr hWnd, int nCmdShow);
+        [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
 
         [StructLayout(LayoutKind.Sequential)] private struct POINT { public int X, Y; }
         [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }

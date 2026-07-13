@@ -25,6 +25,12 @@ namespace Finestra
         [STAThread]
         static void Main()
         {
+            // FIN-SINGLETON — the gate runs FIRST. A second launch activates the running app and exits 0
+            // before ANY init (no forms, no JobGuard, no paths, no log). A hung/dead owner falls through
+            // to a normal start (2s signal timeout) so a click never does nothing. A portable copy in a
+            // different folder is a different gate (path-scoped) and runs as its own instance, by design.
+            if (!SingleInstance.TryBecomeOwner()) return;
+
             // Surface otherwise-silent crashes (record + show). ThreadException is single-slot; UnhandledException multicasts.
             Application.ThreadException += (s, e) =>
             {
@@ -82,7 +88,12 @@ namespace Finestra
             Startup.Apply(settings.RunOnStartup);
             bool startHidden = Startup.LaunchedMinimized();
 
-            Application.Run(new MainForm(startHidden));
+            var mainForm = new MainForm(startHidden);
+            // The activation listener marshals via BeginInvoke, which needs a live handle — force creation
+            // now (on the UI thread) so a hidden-to-tray start can still be surfaced by a second launch.
+            if (!mainForm.IsHandleCreated) { var _ = mainForm.Handle; }
+            SingleInstance.StartListener(mainForm);
+            Application.Run(mainForm);
         }
     }
 }

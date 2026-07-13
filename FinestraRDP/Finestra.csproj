@@ -108,6 +108,7 @@
     <Compile Include="Core\RdpLauncher.cs" />
     <Compile Include="Core\RdpModels.cs" />
     <Compile Include="Core\Secret.cs" />
+    <Compile Include="Core\SingleInstance.cs" />
     <Compile Include="Core\SshErrors.cs" />
     <Compile Include="Core\SshModels.cs" />
     <Compile Include="Core\SshSession.cs" />

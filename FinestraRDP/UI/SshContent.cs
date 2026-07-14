@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Net.NetworkInformation;
 using System.Threading.Tasks;
@@ -29,6 +30,15 @@ namespace Finestra.UI
         private string _status = "connecting…";
         private int _tick;
         private volatile bool _pinging;   // FRDP-FIXSWEEP B25 — toggled on the UI thread + the ThreadPool ping callback
+
+        // FRDP-SSH-PERF-2 — Pump() reads whatever the OS pipe buffer has RIGHT NOW, which for an interactive echo is
+        // often one keystroke's worth of bytes at a time; each Received event used to cost its own BeginInvoke — a
+        // full RX-thread→UI-thread marshal per chunk. On x64 that's noise; on ARM32/RT it's the dominant cost of
+        // "typing feels laggy" (SSH-PERF only fixed the SEND side — Pump() was already off the UI thread). Coalesce:
+        // if a dispatch is already pending, just append to it instead of posting a second one.
+        private readonly object _rxLock = new object();
+        private List<byte[]> _rxPending;
+        private bool _rxDispatchQueued;
 
         /// <summary>The status/ping readout changed — host pushes it to the bar if this tab is active.</summary>
         public event Action<SshContent> StatusChanged;
@@ -98,6 +108,32 @@ namespace Finestra.UI
         private void OnTermInput(byte[] bytes) { var s = _session; if (_connected && s != null) s.Send(bytes); }
         private void OnTermResized(int c, int r, int pw, int ph) { var s = _session; if (_connected && s != null) s.Resize(c, r, pw, ph); }
 
+        /// <summary>FRDP-SSH-PERF-2 — runs on the RX thread (SshSession.Pump). Queue the chunk; only post a UI-thread
+        /// dispatch if one isn't already pending, so a burst of small reads coalesces into one BeginInvoke instead
+        /// of one each.</summary>
+        private void OnTermReceived(byte[] bytes)
+        {
+            lock (_rxLock)
+            {
+                if (_rxPending == null) _rxPending = new List<byte[]>();
+                _rxPending.Add(bytes);
+                if (_rxDispatchQueued) return;
+                _rxDispatchQueued = true;
+            }
+            try { if (!_term.IsDisposed) _term.BeginInvoke((Action)DrainRx); } catch { }
+        }
+
+        /// <summary>UI thread. Feeds every chunk queued since the last drain, in arrival order, before yielding back
+        /// to the message loop — the terminal's own per-call Invalidate()/InvalidateDirty() then coalesces into one
+        /// paint the normal WinForms way (nothing here yields between chunks).</summary>
+        private void DrainRx()
+        {
+            List<byte[]> batch;
+            lock (_rxLock) { batch = _rxPending; _rxPending = null; _rxDispatchQueued = false; }
+            if (batch == null || _term.IsDisposed) return;
+            for (int i = 0; i < batch.Count; i++) _term.Feed(batch[i]);
+        }
+
         private static void Post(Form owner, Action a)
         {
             try { if (owner != null && !owner.IsDisposed) owner.BeginInvoke(a); } catch { }
@@ -108,9 +144,13 @@ namespace Finestra.UI
             if (_term.IsDisposed) { try { s.Dispose(); } catch { } return; }   // tab closed mid-attempt → bail, no leak
             _session = s;
             _connected = true; _dropped = false; _reconnecting = false;
-            s.Received += bytes => { try { if (!_term.IsDisposed) _term.BeginInvoke((Action)(() => _term.Feed(bytes))); } catch { } };
+            lock (_rxLock) { _rxPending = null; _rxDispatchQueued = false; }   // clean slate — no stray batch from a prior session
+            s.Received += OnTermReceived;
             s.Closed += reason => { try { if (!_term.IsDisposed) _term.BeginInvoke((Action)(() => OnClosed(reason))); } catch { } };
-            s.Resize(_term.Cols, _term.Rows, _term.ClientSize.Width, _term.ClientSize.Height);   // push current size now that it's live
+            // FIN-KBD-FREEZE — the freeze contract is ZERO session resize while frozen, full stop; a handshake that
+            // finishes while the keyboard happens to be up must not slip this one through. Skipping it is safe:
+            // unfreezing always does an immediate, undebounced RecomputeNow() resync to the terminal's current size.
+            if (!_term.Frozen) s.Resize(_term.Cols, _term.Rows, _term.ClientSize.Width, _term.ClientSize.Height);   // push current size now that it's live
             SetStatus("● connected · ping …");
             if (_term.Visible) _term.Focus();
         }
@@ -154,6 +194,10 @@ namespace Finestra.UI
         // ── host-driven surface ──────────────────────────────────────────────────
         public void SetVisible(bool visible) { _term.Visible = visible; if (visible) { _term.BringToFront(); } }
         public void Focus() { try { if (!_term.IsDisposed) _term.Focus(); } catch { } }
+
+        /// <summary>FIN-KBD-FREEZE — forward the session-size freeze to the terminal (pins the grid; no PTY
+        /// resize while the keyboard is up; content just clips).</summary>
+        public void SetFrozen(bool frozen) { try { if (!_term.IsDisposed) _term.Frozen = frozen; } catch { } }
 
         // FRDP-POLISH-2 — live prefs from the tab right-click menu. SESSION-ONLY (not written back to the saved
         // profile; the editor/Settings is the persistent home). Font change → grid reflow → remote pty resize.

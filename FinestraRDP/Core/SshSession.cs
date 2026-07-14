@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -36,6 +37,13 @@ namespace Finestra.Core
         private Thread _pump;
         private volatile bool _stop;             // intentional close (Dispose) — never counts as a drop
         private int _closedRaised;               // FRDP-RECONNECT — debounce: the drop fires Closed exactly once
+
+        // FRDP-SSH-PERF — Send/Resize used to write+flush the ShellStream synchronously on the CALLER's thread,
+        // which for every keystroke is the UI thread: a slow/laggy link made typing itself stall. Both now enqueue
+        // a closure here instead; one dedicated background thread drains it in order, so keystrokes/resizes stay
+        // in the order they were issued but never block the caller.
+        private readonly BlockingCollection<Action> _txQueue = new BlockingCollection<Action>();
+        private Thread _writer;
 
         /// <summary>Bytes from the server — raised on the RX thread; marshal to the UI before touching the terminal.</summary>
         public event Action<byte[]> Received;
@@ -111,6 +119,18 @@ namespace Finestra.Core
                                                (uint)Math.Max(1, pxW), (uint)Math.Max(1, pxH), 32 * 1024);
             _pump = new Thread(Pump) { IsBackground = true, Name = "SshRx" };
             _pump.Start();
+            _writer = new Thread(WriteLoop) { IsBackground = true, Name = "SshTx" };
+            _writer.Start();
+        }
+
+        /// <summary>FRDP-SSH-PERF — drains <see cref="_txQueue"/> in order, one item at a time, off the UI thread.
+        /// Each queued closure carries its own try/catch (see <see cref="Send"/>/<see cref="Resize"/>) so a failed
+        /// write and a failed resize keep their existing, distinct error handling — this loop only sequences them.</summary>
+        private void WriteLoop()
+        {
+            try { foreach (var action in _txQueue.GetConsumingEnumerable()) { if (_stop) break; action(); } }
+            catch (ObjectDisposedException) { }     // CompleteAdding raced a final Add — harmless, session's closing
+            catch { }
         }
 
         // ── TOFU host-key verification ──────────────────────────────────────────
@@ -255,28 +275,48 @@ namespace Finestra.Core
             try { Closed?.Invoke(reason); } catch { }
         }
 
+        /// <summary>Queues the bytes for the background writer — returns immediately, never blocks the caller
+        /// (the UI thread, for every keystroke). Order is preserved: this is FIFO against every other queued
+        /// Send/Resize.</summary>
         public void Send(byte[] data)
         {
-            // FRDP-RECONNECT — a failed write means the session is down; trigger the (debounced) drop ONCE instead of
-            // swallowing it per keystroke. No keystroke bytes in the log.
-            try { if (_shell != null && data != null && data.Length > 0) { _shell.Write(data, 0, data.Length); _shell.Flush(); } }
-            catch { RaiseClosed("write failed"); }
+            if (data == null || data.Length == 0) return;
+            try
+            {
+                _txQueue.Add(() =>
+                {
+                    // FRDP-RECONNECT — a failed write means the session is down; trigger the (debounced) drop ONCE
+                    // instead of swallowing it per keystroke. No keystroke bytes in the log.
+                    try { if (_shell != null) { _shell.Write(data, 0, data.Length); _shell.Flush(); } }
+                    catch { RaiseClosed("write failed"); }
+                });
+            }
+            catch (InvalidOperationException) { }   // CompleteAdding already ran (session closing) — nothing to do
         }
 
+        /// <summary>Queued alongside Send() (same FIFO) so a resize can never overtake keystrokes issued before it.</summary>
         public void Resize(int cols, int rows, int pxW, int pxH)
         {
             try
             {
-                if (_shell == null) return;
-                _shell.ChangeWindowSize((uint)Math.Max(1, cols), (uint)Math.Max(1, rows), (uint)Math.Max(1, pxW), (uint)Math.Max(1, pxH));
-                FileLog.Line("[SSH] resize " + cols + "x" + rows + " (remote pty)");   // grid reflow → server window-change (only fires on an actual grid change)
+                _txQueue.Add(() =>
+                {
+                    try
+                    {
+                        if (_shell == null) return;
+                        _shell.ChangeWindowSize((uint)Math.Max(1, cols), (uint)Math.Max(1, rows), (uint)Math.Max(1, pxW), (uint)Math.Max(1, pxH));
+                        FileLog.Line("[SSH] resize " + cols + "x" + rows + " (remote pty)");   // grid reflow → server window-change (only fires on an actual grid change)
+                    }
+                    catch (Exception ex) { FileLog.Line("[SSH] resize failed: " + ex.Message); }
+                });
             }
-            catch (Exception ex) { FileLog.Line("[SSH] resize failed: " + ex.Message); }
+            catch (InvalidOperationException) { }
         }
 
         public void Dispose()
         {
             _stop = true;
+            try { _txQueue.CompleteAdding(); } catch { }   // lets WriteLoop drain and exit instead of leaking the thread
             try { _shell?.Dispose(); } catch { }
             try { if (_client != null) { if (_client.IsConnected) _client.Disconnect(); _client.Dispose(); } } catch { }
             _shell = null; _client = null;

@@ -8,6 +8,9 @@ using Finestra.Helpers;
 
 namespace Finestra.UI.Controls
 {
+    /// <summary>FRDP-POLISH-4 — which column a header click sorts by.</summary>
+    internal enum SortColumn { Name, Size, Modified, Type }
+
     /// <summary>
     /// FRDP-FTP-POLISH — a fully OWNER-DRAWN file list (glyph · Name · Size · Modified · Type), replacing the native
     /// <see cref="ListView"/> in the FTP panes. It reuses the app's owner-drawn <see cref="ThemedScrollPanel"/> for
@@ -27,6 +30,23 @@ namespace Finestra.UI.Controls
         public event Action<RemoteEntry> ItemActivated;   // double-click / Enter
         public event Action<Point> ContextRequested;      // right-click → screen point
         public event Action ReloadRequested;              // F5
+        /// <summary>FRDP-POLISH-4 — F2 with exactly one item selected.</summary>
+        public event Action RenameRequested;
+        /// <summary>FRDP-POLISH-4 — Delete key; the caller reads <see cref="SelectedEntries"/> for what to remove.</summary>
+        public event Action DeleteRequested;
+        /// <summary>FRDP-POLISH-4 — Backspace, "go up a level".</summary>
+        public event Action UpRequested;
+        /// <summary>FRDP-FTP-RICH — Ctrl+C / Ctrl+X / Ctrl+V. The caller reads <see cref="SelectedEntries"/> for
+        /// Copy/Cut; Paste needs no payload (the clipboard lives in the owning FtpBrowserControl).</summary>
+        public event Action CopyRequested;
+        public event Action CutRequested;
+        public event Action PasteRequested;
+        /// <summary>FRDP-POLISH-4 — a column header was clicked; toggles ascending/descending if it's the same
+        /// column again. Dirs-first is the caller's job (this only carries WHICH field + direction).</summary>
+        public event Action<SortColumn, bool> SortRequested;
+
+        private SortColumn _sortCol = SortColumn.Name;
+        private bool _sortAsc = true;
 
         public ThemedFileList()
         {
@@ -34,6 +54,8 @@ namespace Finestra.UI.Controls
             _header = new Panel { Dock = DockStyle.Top, Height = HeaderH };
             _header.Paint += HeaderPaint;
             _header.Resize += (s, e) => _header.Invalidate();   // repaint column labels on width change (Panel won't by default)
+            _header.MouseClick += HeaderClick;
+            _header.Cursor = Cursors.Hand;
 
             _scroll = new ThemedScrollPanel { Dock = DockStyle.Fill };
             _rows = new RowsSurface(this) { Dock = DockStyle.Top, Height = 0 };
@@ -43,11 +65,34 @@ namespace Finestra.UI.Controls
             _rows.ItemActivated += e => ItemActivated?.Invoke(e);
             _rows.ContextRequested += p => ContextRequested?.Invoke(p);
             _rows.ReloadRequested += () => ReloadRequested?.Invoke();
+            _rows.RenameRequested += () => RenameRequested?.Invoke();
+            _rows.DeleteRequested += () => DeleteRequested?.Invoke();
+            _rows.UpRequested += () => UpRequested?.Invoke();
+            _rows.CopyRequested += () => CopyRequested?.Invoke();
+            _rows.CutRequested += () => CutRequested?.Invoke();
+            _rows.PasteRequested += () => PasteRequested?.Invoke();
             _rows.EnsureVisible += (y, h) => _scroll.EnsureVisible(y, h);
 
             Controls.Add(_scroll);    // Fill (added first → under the Top header)
             Controls.Add(_header);
             ThemeHelper.ThemeChanged += OnTheme;
+        }
+
+        private void HeaderClick(object sender, MouseEventArgs e)
+        {
+            int x = e.X;
+            int w = _header.Width - Gutter;
+            int nameX, nameW, sizeX, sizeW, modX, modW, typeX, typeW;
+            Cols(w, out nameX, out nameW, out sizeX, out sizeW, out modX, out modW, out typeX, out typeW);
+            SortColumn col;
+            if (x >= typeX) col = SortColumn.Type;
+            else if (x >= modX) col = SortColumn.Modified;
+            else if (x >= sizeX) col = SortColumn.Size;
+            else col = SortColumn.Name;
+            _sortAsc = (col == _sortCol) ? !_sortAsc : true;
+            _sortCol = col;
+            _header.Invalidate();
+            SortRequested?.Invoke(_sortCol, _sortAsc);
         }
 
         private void OnTheme() { if (IsDisposed) return; try { BeginInvoke((Action)(() => { _header.Invalidate(); _rows.Invalidate(); })); } catch { } }
@@ -62,6 +107,10 @@ namespace Finestra.UI.Controls
         }
 
         public RemoteEntry? Selected => _rows.Selected;
+        /// <summary>FRDP-POLISH-4 — every currently-selected entry, in row order (may be more than one after a
+        /// Ctrl/Shift-click or Ctrl+A). Empty when nothing is selected.</summary>
+        public IReadOnlyList<RemoteEntry> SelectedEntries => _rows.SelectedEntries;
+        public void SelectAll() => _rows.SelectAll();
         public new void Focus() { try { _rows.Focus(); } catch { } }
 
         /// <summary>Column x-positions for a given content width — shared by the header + rows so they line up.</summary>
@@ -85,12 +134,14 @@ namespace Finestra.UI.Controls
             int w = _header.Width - Gutter;   // content area aligns with the rows (which lose Gutter to the scrollbar)
             int nameX, nameW, sizeX, sizeW, modX, modW, typeX, typeW;
             Cols(w, out nameX, out nameW, out sizeX, out sizeW, out modX, out modW, out typeX, out typeW);
+            Color accent = ThemeHelper.GetWindowsAccentColor();
+            string arrow = _sortAsc ? " ▲" : " ▼";   // ▲ / ▼ — FRDP-POLISH-4 sort indicator
             using (var f = FontHelper.Ui(8.75f, FontStyle.Bold))
             {
-                TextRenderer.DrawText(g, "Name", f, new Rectangle(nameX, 0, nameW, HeaderH), fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-                TextRenderer.DrawText(g, "Size", f, new Rectangle(sizeX, 0, sizeW, HeaderH), fg, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-                TextRenderer.DrawText(g, "Modified", f, new Rectangle(modX, 0, modW, HeaderH), fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-                TextRenderer.DrawText(g, "Type", f, new Rectangle(typeX, 0, typeW, HeaderH), fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                TextRenderer.DrawText(g, "Name" + (_sortCol == SortColumn.Name ? arrow : ""), f, new Rectangle(nameX, 0, nameW, HeaderH), _sortCol == SortColumn.Name ? accent : fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                TextRenderer.DrawText(g, "Size" + (_sortCol == SortColumn.Size ? arrow : ""), f, new Rectangle(sizeX, 0, sizeW, HeaderH), _sortCol == SortColumn.Size ? accent : fg, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                TextRenderer.DrawText(g, "Modified" + (_sortCol == SortColumn.Modified ? arrow : ""), f, new Rectangle(modX, 0, modW, HeaderH), _sortCol == SortColumn.Modified ? accent : fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                TextRenderer.DrawText(g, "Type" + (_sortCol == SortColumn.Type ? arrow : ""), f, new Rectangle(typeX, 0, typeW, HeaderH), _sortCol == SortColumn.Type ? accent : fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             }
         }
 
@@ -105,12 +156,22 @@ namespace Finestra.UI.Controls
         {
             private readonly ThemedFileList _owner;
             private readonly List<RemoteEntry> _items = new List<RemoteEntry>();
-            private int _sel = -1, _hover = -1;
+            // FRDP-POLISH-4 — multi-select. _sel stays the FOCUS row (keyboard nav anchor, and the single-item
+            // Selected property every existing caller already uses); _selected is the actual multi-selection set;
+            // _anchor is the Shift-click range base (set on every plain/Ctrl click, held across Shift-clicks).
+            private int _sel = -1, _hover = -1, _anchor = -1;
+            private readonly HashSet<int> _selected = new HashSet<int>();
 
             public event Action SelectionChanged;
             public event Action<RemoteEntry> ItemActivated;
             public event Action<Point> ContextRequested;
             public event Action ReloadRequested;
+            public event Action RenameRequested;
+            public event Action DeleteRequested;
+            public event Action UpRequested;
+            public event Action CopyRequested;
+            public event Action CutRequested;
+            public event Action PasteRequested;
             public event Action<int, int> EnsureVisible;   // (y, h) in content coords
 
             public RowsSurface(ThemedFileList owner)
@@ -122,11 +183,40 @@ namespace Finestra.UI.Controls
 
             public RemoteEntry? Selected => (_sel >= 0 && _sel < _items.Count) ? _items[_sel] : (RemoteEntry?)null;
 
+            public IReadOnlyList<RemoteEntry> SelectedEntries
+            {
+                get
+                {
+                    var list = new List<RemoteEntry>(_selected.Count);
+                    var idx = new List<int>(_selected); idx.Sort();
+                    foreach (int i in idx) if (i >= 0 && i < _items.Count) list.Add(_items[i]);
+                    return list;
+                }
+            }
+
+            public void SelectAll()
+            {
+                if (_items.Count == 0) return;
+                _selected.Clear();
+                for (int i = 0; i < _items.Count; i++) _selected.Add(i);
+                _sel = _items.Count - 1; _anchor = 0;
+                SelectionChanged?.Invoke();
+                Invalidate();
+            }
+
             public void SetRows(IReadOnlyList<RemoteEntry> items)
             {
                 _items.Clear(); _items.AddRange(items);
-                _sel = -1; _hover = -1;
+                _sel = -1; _hover = -1; _anchor = -1; _selected.Clear();
                 Invalidate();
+            }
+
+            /// <summary>Replace the selection with exactly one row (plain click, arrow-key nav, activation).</summary>
+            private void SelectSingle(int i)
+            {
+                _selected.Clear();
+                if (i >= 0 && i < _items.Count) _selected.Add(i);
+                _sel = i; _anchor = i;
             }
 
             protected override void OnMouseDown(MouseEventArgs e)
@@ -134,9 +224,36 @@ namespace Finestra.UI.Controls
                 base.OnMouseDown(e);
                 Focus();
                 int i = e.Y / RowH;
-                if (i >= 0 && i < _items.Count) { if (i != _sel) { _sel = i; SelectionChanged?.Invoke(); Invalidate(); } }
-                else if (_sel != -1) { _sel = -1; SelectionChanged?.Invoke(); Invalidate(); }
-                if (e.Button == MouseButtons.Right) ContextRequested?.Invoke(PointToScreen(e.Location));
+                bool valid = i >= 0 && i < _items.Count;
+
+                if (e.Button == MouseButtons.Right)
+                {
+                    // Right-click on a row already in the selection keeps the WHOLE selection (so a context-menu
+                    // action applies to everything picked) — matches Explorer. Right-click elsewhere replaces it.
+                    if (valid && !_selected.Contains(i)) { SelectSingle(i); SelectionChanged?.Invoke(); Invalidate(); }
+                    else if (!valid && _selected.Count > 0) { _selected.Clear(); _sel = -1; _anchor = -1; SelectionChanged?.Invoke(); Invalidate(); }
+                    ContextRequested?.Invoke(PointToScreen(e.Location));
+                    return;
+                }
+
+                if (!valid) { if (_selected.Count > 0) { _selected.Clear(); _sel = -1; _anchor = -1; SelectionChanged?.Invoke(); Invalidate(); } return; }
+
+                if ((Control.ModifierKeys & Keys.Shift) == Keys.Shift && _anchor >= 0)
+                {
+                    int lo = Math.Min(_anchor, i), hi = Math.Max(_anchor, i);
+                    _selected.Clear();
+                    for (int k = lo; k <= hi; k++) _selected.Add(k);
+                    _sel = i;   // anchor unchanged — a further Shift-click re-ranges from the SAME anchor
+                }
+                else if ((Control.ModifierKeys & Keys.Control) == Keys.Control)
+                {
+                    if (_selected.Contains(i)) _selected.Remove(i); else _selected.Add(i);
+                    _sel = i; _anchor = i;
+                }
+                else SelectSingle(i);
+
+                SelectionChanged?.Invoke();
+                Invalidate();
             }
 
             protected override void OnMouseDoubleClick(MouseEventArgs e)
@@ -156,13 +273,20 @@ namespace Finestra.UI.Controls
 
             protected override bool IsInputKey(Keys k)
             {
-                switch (k & Keys.KeyCode) { case Keys.Up: case Keys.Down: case Keys.PageUp: case Keys.PageDown: case Keys.Home: case Keys.End: case Keys.Enter: return true; }
+                switch (k & Keys.KeyCode) { case Keys.Up: case Keys.Down: case Keys.PageUp: case Keys.PageDown: case Keys.Home: case Keys.End: case Keys.Enter: case Keys.Back: return true; }
                 return base.IsInputKey(k);
             }
 
             protected override void OnKeyDown(KeyEventArgs e)
             {
                 base.OnKeyDown(e);
+                if (e.Control && e.KeyCode == Keys.A) { SelectAll(); e.Handled = true; return; }
+                if (e.Control && e.KeyCode == Keys.C) { if (_selected.Count > 0) CopyRequested?.Invoke(); e.Handled = true; return; }
+                if (e.Control && e.KeyCode == Keys.X) { if (_selected.Count > 0) CutRequested?.Invoke(); e.Handled = true; return; }
+                if (e.Control && e.KeyCode == Keys.V) { PasteRequested?.Invoke(); e.Handled = true; return; }
+                if (e.KeyCode == Keys.Back) { UpRequested?.Invoke(); e.Handled = true; return; }
+                if (e.KeyCode == Keys.F2) { if (_selected.Count == 1) RenameRequested?.Invoke(); e.Handled = true; return; }
+                if (e.KeyCode == Keys.Delete) { if (_selected.Count > 0) DeleteRequested?.Invoke(); e.Handled = true; return; }
                 if (_items.Count == 0) return;
                 int n = _items.Count, sel = _sel;
                 switch (e.KeyCode)
@@ -177,7 +301,8 @@ namespace Finestra.UI.Controls
                     case Keys.F5: ReloadRequested?.Invoke(); return;
                     default: return;
                 }
-                if (sel != _sel) { _sel = sel; SelectionChanged?.Invoke(); EnsureVisible?.Invoke(_sel * RowH, RowH); Invalidate(); }
+                // Arrow-key nav (no Shift extend, per this batch's scope) always collapses to a single selection.
+                if (sel != _sel || _selected.Count > 1) { SelectSingle(sel); SelectionChanged?.Invoke(); EnsureVisible?.Invoke(_sel * RowH, RowH); Invalidate(); }
                 e.Handled = true;
             }
 
@@ -206,7 +331,7 @@ namespace Finestra.UI.Controls
                     {
                         var it = _items[i];
                         int y = i * RowH;
-                        bool seld = i == _sel;
+                        bool seld = _selected.Contains(i);
                         if (seld) using (var sb = new SolidBrush(accent)) g.FillRectangle(sb, 0, y, w, RowH);
                         else if (i == _hover) using (var hb = new SolidBrush(dark ? Color.FromArgb(44, 44, 50) : Color.FromArgb(236, 236, 240))) g.FillRectangle(hb, 0, y, w, RowH);
 

@@ -21,6 +21,7 @@ namespace Finestra.UI.Controls
     {
         private IRemoteFileSystem _fs;
         private string _path = "";
+        private IReadOnlyList<RemoteEntry> _lastItems;   // FRDP-POLISH-4 — cached so a header-click re-sort is instant, no re-List()
 
         private readonly Panel _header;
         private readonly TextBox _pathBox;
@@ -34,7 +35,18 @@ namespace Finestra.UI.Controls
         public event Action SelectionChanged;
         /// <summary>FRDP-RECONNECT — a remote List failed (raised with the exception); the browser decides if it's a drop.</summary>
         public event Action<Exception> RemoteError;
+        /// <summary>FRDP-POLISH-4/FRDP-FTP-RICH — the owner (FtpBrowserControl) appends the Copy/Cut/Paste items
+        /// (which need the clipboard state + possibly the SIBLING pane/filesystem) to the SAME menu instance right
+        /// before it's shown. This pane only ever builds the actions it can do alone (Select All/New folder/
+        /// Rename/Delete/Refresh).</summary>
+        public event Action<ThemedContextMenuStrip> ExtraContextItems;
+        /// <summary>FRDP-FTP-RICH — Ctrl+C/Ctrl+X/Ctrl+V. Copy/Cut fire only with a non-empty selection (read
+        /// <see cref="SelectedEntries"/> in the handler); Paste always fires (the owner decides if there's
+        /// anything to paste).</summary>
+        public event Action CopyRequested, CutRequested, PasteRequested;
         private bool _live = true;   // false = disconnected: remote nav/refresh/context disabled (SetLive)
+        private SortColumn _sortCol = SortColumn.Name;
+        private bool _sortAsc = true;
 
         /// <summary>FRDP-RECONNECT — enable/disable remote ops (nav, refresh, context) while dropped/reconnecting. The
         /// list keeps showing the last listing; the local pane is never touched by this.</summary>
@@ -58,6 +70,13 @@ namespace Finestra.UI.Controls
             _list.ItemActivated += e => { if (e.IsDirectory && _fs != null) NavigateAsync(e.FullPath); };
             _list.ContextRequested += screen => ShowContextMenu(screen);
             _list.ReloadRequested += () => Reload();
+            _list.RenameRequested += () => RenameSel();
+            _list.DeleteRequested += () => DeleteSel();
+            _list.UpRequested += () => GoUp();
+            _list.CopyRequested += () => CopyRequested?.Invoke();
+            _list.CutRequested += () => CutRequested?.Invoke();
+            _list.PasteRequested += () => PasteRequested?.Invoke();
+            _list.SortRequested += (col, asc) => { _sortCol = col; _sortAsc = asc; if (_lastItems != null) Populate(_lastItems); };
 
             _header.Controls.Add(_pathBox);
             _header.Controls.Add(_up);
@@ -109,17 +128,22 @@ namespace Finestra.UI.Controls
         public void Reload() { if (_fs != null) NavigateAsync(_path); }
 
         // ── context actions (all via the interface — no backend branch) ──
+        public IReadOnlyList<RemoteEntry> SelectedEntries => _list.SelectedEntries;
+
         private void ShowContextMenu(Point screen)
         {
             if (_fs == null || !_live) return;   // FRDP-RECONNECT — no remote ops while disconnected
             var menu = new ThemedContextMenuStrip { Font = FontHelper.Ui(9.5f) };
+            var multi = SelectedEntries;
             var sel = Selected;
-            menu.Items.Add(new ToolStripMenuItem("Refresh", null, (s, e) => Reload()));
+            menu.Items.Add(new ToolStripMenuItem("Refresh", null, (s, e) => Reload()) { ShortcutKeyDisplayString = "F5" });
+            if (!string.IsNullOrEmpty(_path)) menu.Items.Add(new ToolStripMenuItem("Select All", null, (s, e) => _list.SelectAll()) { ShortcutKeyDisplayString = "Ctrl+A" });
             if (!string.IsNullOrEmpty(_path)) menu.Items.Add(new ToolStripMenuItem("New folder…", null, (s, e) => NewFolder()));
-            if (sel != null && !string.IsNullOrEmpty(_path))
+            ExtraContextItems?.Invoke(menu);   // FTP-BROWSER's owner appends Copy/Move/Download/Upload here
+            if (multi.Count > 0 && !string.IsNullOrEmpty(_path))
             {
-                if (_fs.CanRename) menu.Items.Add(new ToolStripMenuItem("Rename…", null, (s, e) => RenameSel()));
-                menu.Items.Add(new ToolStripMenuItem("Delete", null, (s, e) => DeleteSel()));
+                if (_fs.CanRename && multi.Count == 1) menu.Items.Add(new ToolStripMenuItem("Rename…", null, (s, e) => RenameSel()) { ShortcutKeyDisplayString = "F2" });
+                menu.Items.Add(new ToolStripMenuItem(multi.Count == 1 ? "Delete" : "Delete " + multi.Count + " items", null, (s, e) => DeleteSel()) { ShortcutKeyDisplayString = "Del" });
             }
             menu.Show(screen);
         }
@@ -139,19 +163,44 @@ namespace Finestra.UI.Controls
             try { _fs.Rename(sel.Value.FullPath, _fs.Combine(_path, name)); Reload(); } catch (Exception ex) { ShowError("Could not rename:\n" + ex.Message); }
         }
 
+        /// <summary>FRDP-POLISH-4 — multi-select aware: deletes every currently-selected entry, one confirm dialog
+        /// covering the whole batch. Stops (and reports) on the first failure rather than silently skipping it —
+        /// a partial batch delete should never look like it fully succeeded.</summary>
         private void DeleteSel()
         {
-            var sel = Selected; if (sel == null) return;
-            string what = sel.Value.IsDirectory ? "folder" : "file";
-            if (!ConfirmDialog.Ask(FindForm(), "Delete " + what + " '" + sel.Value.Name + "'?" + (sel.Value.IsDirectory ? "\n\nThis removes everything inside it." : ""),
-                "Finestra — Files")) return;
-            try { _fs.Delete(sel.Value.FullPath, sel.Value.IsDirectory); Reload(); } catch (Exception ex) { ShowError("Could not delete:\n" + ex.Message); }
+            var items = SelectedEntries; if (items.Count == 0) return;
+            string msg = items.Count == 1
+                ? "Delete " + (items[0].IsDirectory ? "folder" : "file") + " '" + items[0].Name + "'?" + (items[0].IsDirectory ? "\n\nThis removes everything inside it." : "")
+                : "Delete " + items.Count + " selected items?\n\nAny selected folders remove everything inside them.";
+            if (!ConfirmDialog.Ask(FindForm(), msg, "Finestra — Files")) return;
+            foreach (var it in items)
+            {
+                try { _fs.Delete(it.FullPath, it.IsDirectory); }
+                catch (Exception ex) { ShowError("Could not delete '" + it.Name + "':\n" + ex.Message); break; }
+            }
+            Reload();
         }
 
+        /// <summary>FRDP-POLISH-4 — dirs always sort first (unaffected by the column choice), then the clicked
+        /// column ascending/descending. Caches the raw items so a header click re-sorts instantly without a
+        /// fresh List() round-trip (Reload() re-fetches; a sort click alone should not touch the network).</summary>
         private void Populate(IReadOnlyList<RemoteEntry> items)
         {
-            var sorted = items.OrderByDescending(e => e.IsDirectory).ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase).ToList();
-            _list.SetEntries(sorted);
+            _lastItems = items;
+            IOrderedEnumerable<RemoteEntry> byDir = items.OrderByDescending(e => e.IsDirectory);
+            IOrderedEnumerable<RemoteEntry> ordered;
+            switch (_sortCol)
+            {
+                case SortColumn.Size: ordered = _sortAsc ? byDir.ThenBy(e => e.Size) : byDir.ThenByDescending(e => e.Size); break;
+                case SortColumn.Modified: ordered = _sortAsc ? byDir.ThenBy(e => e.Modified) : byDir.ThenByDescending(e => e.Modified); break;
+                case SortColumn.Type: ordered = _sortAsc
+                    ? byDir.ThenBy(e => e.IsDirectory ? "" : (e.IsSymlink ? "Link" : "File"), StringComparer.OrdinalIgnoreCase)
+                    : byDir.ThenByDescending(e => e.IsDirectory ? "" : (e.IsSymlink ? "Link" : "File"), StringComparer.OrdinalIgnoreCase); break;
+                default: ordered = _sortAsc
+                    ? byDir.ThenBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
+                    : byDir.ThenByDescending(e => e.Name, StringComparer.OrdinalIgnoreCase); break;
+            }
+            _list.SetEntries(ordered.ToList());
         }
 
         private void SetBusy(bool busy) { try { Cursor = busy ? Cursors.WaitCursor : Cursors.Default; _up.Enabled = _refresh.Enabled = _pathBox.Enabled = !busy; } catch { } }

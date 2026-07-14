@@ -183,6 +183,19 @@ namespace Finestra.Core
         /// <summary>Decrypts the stored password for launch (empty if none / undecryptable).</summary>
         public string GetPassword() => Secret.Unprotect(PasswordEnc);
 
+        /// <summary>FRDP-POLISH-4 — a fully independent copy (new Id, nested Settings/Ssh/Ftp objects NOT shared
+        /// with the original) for the manager's "Duplicate" action. A field-by-field MemberwiseClone would leave
+        /// the nested settings objects shared by reference — editing the duplicate would silently mutate the
+        /// original too. JSON round-trip via the SAME serializer this app already persists profiles with is the
+        /// simplest way to deep-clone every field correctly without hand-maintaining a field list here. PasswordEnc
+        /// carries over as-is and still decrypts fine — DPAPI protection here is user-scoped, not tied to Id.</summary>
+        public ConnectionProfile Clone()
+        {
+            var dup = JsonConvert.DeserializeObject<ConnectionProfile>(JsonConvert.SerializeObject(this));
+            dup.Id = Guid.NewGuid().ToString("N");
+            return dup;
+        }
+
         [JsonIgnore]
         public string DisplayTarget
         {

@@ -17,6 +17,13 @@ namespace Finestra.Core
         public string ConnectMode { get; set; } = "Embed";      // Embed = chromeless fullscreen host (tabs/overlay); Window = shell-out (UI-1B)
         public string CloseAction { get; set; } = "Ask";        // Ask | MinimizeToTray | Exit — what the ✕ does (resettable in Settings)
         public bool   RunOnStartup { get; set; } = false;       // opt-in HKCU\...\Run key (starts minimized to tray)
+        // FIN-KEYBOARD — touch-keyboard-aware layout (RT). Property initializer ⇒ a settings.json written
+        // before 1.0.1 simply lacks the key and DEFAULTS TO TRUE, never throws (the B18 lesson).
+        public bool   KeyboardAutoResize { get; set; } = true;  // give the touch keyboard room; off = escape hatch
+        // FIN-KBD-FREEZE — diagnostic override: skip the "a hardware keyboard is attached" suppression, so a
+        // SINGLE device trip can confirm whether that heuristic is the reason detection never fires. #if DEBUG
+        // UI only (see AppSettingsForm) — the field itself is harmless to carry in Release (never surfaced).
+        public bool   KeyboardIgnoreHardwareCheck { get; set; } = false;
 
         /// <summary>The "defaults for new servers" profile — a new Connection inherits this (resolution + the
         /// rest). Editing it in Settings does NOT affect existing servers (they carry their own SettingsProfile).</summary>

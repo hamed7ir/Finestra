@@ -87,6 +87,9 @@ namespace Finestra.UI.Controls
 
         private Rectangle[] _tabRects = new Rectangle[0];
         private Rectangle[] _tabCloseRects = new Rectangle[0];
+        // FIN-SSH-TAB-MENU — SSH-only "⋮" (vertical ellipsis) so touch users (no right-click gesture) can discover
+        // and reach the per-tab quick menu. Rectangle.Empty for non-SSH tabs — never drawn, never hit-tested.
+        private Rectangle[] _tabMenuRects = new Rectangle[0];
         private Rectangle _addRect, _statsRect, _pauseRect, _fsRect, _minRect, _restoreRect, _closeRect, _reconnectRect;
 
         public SessionTabBar()
@@ -124,6 +127,7 @@ namespace Finestra.UI.Controls
 
             var tabs = new List<Rectangle>();
             var closes = new List<Rectangle>();
+            var menus = new List<Rectangle>();
             int x = 6;
             int maxTabsRight = Math.Max(120, _statsRect.Left - AddW - 12);
             for (int i = 0; i < _tabs.Count; i++)
@@ -131,11 +135,14 @@ namespace Finestra.UI.Controls
                 int w = Math.Min(TabW, Math.Max(90, (maxTabsRight - 6) / Math.Max(1, _tabs.Count)));
                 var r = new Rectangle(x, 4, w, BarHeight - 8);
                 tabs.Add(r);
-                closes.Add(new Rectangle(r.Right - 22, r.Top + (r.Height - 16) / 2, 16, 16));
+                var close = new Rectangle(r.Right - 22, r.Top + (r.Height - 16) / 2, 16, 16);
+                closes.Add(close);
+                menus.Add(KindAt(i) == SessionKind.Ssh ? new Rectangle(close.Left - 20, close.Top, 16, 16) : Rectangle.Empty);
                 x += w + 4;
             }
             _tabRects = tabs.ToArray();
             _tabCloseRects = closes.ToArray();
+            _tabMenuRects = menus.ToArray();
             _addRect = new Rectangle(Math.Min(x, maxTabsRight), 4, AddW, BarHeight - 8);
         }
 
@@ -155,10 +162,12 @@ namespace Finestra.UI.Controls
                 // per-type glyph tile — cached bitmap (never rebuilt per paint), size derives from the tab height
                 int tile = Math.Max(14, r.Height - 8);
                 g.DrawImageUnscaled(TypeGlyph.Get(KindAt(i), tile), r.X + 6, r.Y + (r.Height - tile) / 2);
-                var textR = new Rectangle(r.X + tile + 12, r.Y, r.Width - tile - 36, r.Height);
+                bool hasMenu = !_tabMenuRects[i].IsEmpty;
+                var textR = new Rectangle(r.X + tile + 12, r.Y, r.Width - tile - (hasMenu ? 56 : 36), r.Height);
                 using (var f = FontHelper.Ui(9.5f, act ? FontStyle.Bold : FontStyle.Regular))
                     TextRenderer.DrawText(g, _tabs[i], f, textR, Color.White,
                         TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+                if (hasMenu) DrawTabMenuGlyph(g, _tabMenuRects[i]);
                 var c = _tabCloseRects[i];
                 using (var p = new Pen(Color.FromArgb(220, 255, 255, 255), 1.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
                 {
@@ -212,6 +221,18 @@ namespace Finestra.UI.Controls
                     g.DrawLines(p, new[] { new Point(cx - b - arm, cy + b), new Point(cx - b, cy + b), new Point(cx - b, cy + b + arm) });
                     g.DrawLines(p, new[] { new Point(cx + b + arm, cy + b), new Point(cx + b, cy + b), new Point(cx + b, cy + b + arm) });
                 }
+            }
+        }
+
+        /// <summary>FIN-SSH-TAB-MENU — vertical ellipsis "⋮": three small filled dots, same white-on-accent
+        /// stroke weight as the window-control glyphs above (visually consistent, not a new style).</summary>
+        private static void DrawTabMenuGlyph(Graphics g, Rectangle r)
+        {
+            int cx = r.Left + r.Width / 2, cy = r.Top + r.Height / 2;
+            using (var b = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
+            {
+                const int dot = 3, gap = 5;
+                for (int i = -1; i <= 1; i++) g.FillEllipse(b, cx - dot / 2, cy + i * gap - dot / 2, dot, dot);
             }
         }
 
@@ -299,6 +320,10 @@ namespace Finestra.UI.Controls
             if (_addRect.Contains(e.Location)) { AddClicked?.Invoke(); return; }
             for (int i = 0; i < _tabRects.Length; i++)
             {
+                // FIN-SSH-TAB-MENU — a left-click on the "⋮" opens the SAME per-type quick menu right-click does
+                // (touch has no right-click gesture); reuses TabRightClicked so the host needs no new plumbing.
+                if (i < _tabMenuRects.Length && !_tabMenuRects[i].IsEmpty && _tabMenuRects[i].Contains(e.Location))
+                { TabRightClicked?.Invoke(i, PointToScreen(e.Location)); return; }
                 if (i < _tabCloseRects.Length && _tabCloseRects[i].Contains(e.Location)) { TabCloseClicked?.Invoke(i); return; }
                 if (_tabRects[i].Contains(e.Location))
                 {

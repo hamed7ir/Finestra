@@ -25,8 +25,13 @@ namespace Finestra.Core
         private int _prevRtt = -1;
         private double _jitter;
 
+        /// <summary>FRDP-RDP-LIVENESS Part 0 — every [STATS] log line was missing the pid, which is exactly what
+        /// made two same-named "us2" sessions indistinguishable in a real device log. Read-only after construction.</summary>
+        public readonly int Pid;
+
         public StatsPipe(int wfreerdpPid)
         {
+            Pid = wfreerdpPid;
             _thread = new Thread(() => Run(wfreerdpPid)) { IsBackground = true, Name = "StatsPipe" };
             _thread.Start();
         }
@@ -42,7 +47,7 @@ namespace Finestra.Core
                 _pipe.Connect(10000);   // wfreerdp opens the pipe in post_connect (after the session is up)
                 _writer = new StreamWriter(_pipe) { AutoFlush = true, NewLine = "\n" };
                 var reader = new StreamReader(_pipe);
-                FileLog.Line("[STATS] pipe connected to wfreerdp pid=" + pid);
+                FileLog.Line("[STATS pid=" + pid + "] pipe connected to wfreerdp");
                 string line;
                 int rawLogged = 0;
                 bool loggedNonzero = false;
@@ -51,25 +56,38 @@ namespace Finestra.Core
                     // Diagnostics: the raw line carries trailing "<baseRtt> <resultCbN> <syncCbN>" so the
                     // proof log shows whether the autodetect callbacks fired and when the first real
                     // (non-zero) reading arrived. Parsing below only consumes the first two numbers.
-                    if (rawLogged < 2) { FileLog.Line("[STATS] raw: " + line); rawLogged++; }
+                    if (rawLogged < 2) { FileLog.Line("[STATS pid=" + pid + "] raw: " + line); rawLogged++; }
                     var parts = line.Split(' ');
                     if (parts.Length >= 3 && parts[0] == "STATS"
                         && int.TryParse(parts[1], out int rtt) && int.TryParse(parts[2], out int bw))
                     {
                         if (!loggedNonzero && (rtt > 0 || bw > 0))
-                        { FileLog.Line("[STATS] first non-zero: " + line); loggedNonzero = true; }
+                        { FileLog.Line("[STATS pid=" + pid + "] first non-zero: " + line); loggedNonzero = true; }
                         if (_prevRtt >= 0) _jitter += (Math.Abs(rtt - _prevRtt) - _jitter) / 8.0;   // smoothed |Δrtt|
                         _prevRtt = rtt;
                         try { Updated?.Invoke(rtt, bw, (int)Math.Round(_jitter)); } catch { }
                     }
                 }
+                // FRDP-RDP-LIVENESS Part 0 — a clean EOF (server closed its end) fell through the while loop with
+                // ZERO log output before this: the exact blind spot that made a dead channel indistinguishable from
+                // "still fine, just quiet". _stop is set by OUR OWN Dispose(), so only log the OTHER-END-closed case.
+                if (!_stop) FileLog.Line("[STATS pid=" + pid + "] read loop ended (EOF, remote closed)");
             }
-            catch (Exception ex) { FileLog.Line("[STATS] pipe ended: " + ex.Message); }
+            catch (Exception ex) { FileLog.Line("[STATS pid=" + pid + "] pipe ended: " + ex.Message); }
         }
+
+        /// <summary>FRDP-RDP-LIVENESS Part 1 — corroborating signal only, NEVER sufficient alone: a hung engine's
+        /// write can fail well before the heartbeat's own silence threshold elapses. The liveness check logs this
+        /// alongside its verdict; it never independently triggers anything on its own.</summary>
+        public volatile bool LastSendFailed;
 
         public void Pause() => Send("PAUSE");
         public void Resume() => Send("RESUME");
-        private void Send(string cmd) { try { _writer?.WriteLine(cmd); } catch (Exception ex) { FileLog.Line("[STATS] send failed: " + ex.Message); } }
+        private void Send(string cmd)
+        {
+            try { _writer?.WriteLine(cmd); LastSendFailed = false; }
+            catch (Exception ex) { LastSendFailed = true; FileLog.Line("[STATS pid=" + Pid + "] send failed: " + ex.Message); }
+        }
 
         public void Dispose()
         {

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 
 namespace Finestra.Core
 {
@@ -13,6 +14,7 @@ namespace Finestra.Core
     {
         public string Protocol => "Local";
         public bool CanRename => true;
+        public bool CanServerSideCopy => true;   // a plain same-disk copy — always available, no capability check needed
 #pragma warning disable 0067   // FRDP-RECONNECT — the local filesystem never drops
         public event Action Dropped;
 #pragma warning restore 0067
@@ -82,8 +84,25 @@ namespace Finestra.Core
 
         public bool Exists(string path) { try { return !string.IsNullOrEmpty(path) && (File.Exists(path) || Directory.Exists(path)); } catch { return false; } }
 
+        /// <summary>FRDP-FTP-RICH — a plain same-disk copy (recursive for directories). No temp-file dance needed
+        /// here (unlike a network transfer, a local File.Copy either fully succeeds or throws with nothing
+        /// partially written into the destination's final name — .NET's own File.Copy already writes to the
+        /// target path directly and atomically enough for a local same-volume operation).</summary>
+        public void CopyServerSide(string fromPath, string toPath)
+        {
+            if (Directory.Exists(fromPath)) CopyDirectory(fromPath, toPath);
+            else File.Copy(fromPath, toPath, overwrite: true);
+        }
+
+        private static void CopyDirectory(string from, string to)
+        {
+            Directory.CreateDirectory(to);
+            foreach (var f in Directory.GetFiles(from)) File.Copy(f, Path.Combine(to, Path.GetFileName(f)), overwrite: true);
+            foreach (var d in Directory.GetDirectories(from)) CopyDirectory(d, Path.Combine(to, Path.GetFileName(d)));
+        }
+
         // transfers are performed by the remote backend (it moves bytes to/from local disk)
-        public void Download(string remotePath, string localPath, Action<long, long> progress) => throw new NotSupportedException();
-        public void Upload(string localPath, string remotePath, Action<long, long> progress) => throw new NotSupportedException();
+        public void Download(string remotePath, string localPath, Action<long, long> progress, CancellationToken ct, long resumeOffset) => throw new NotSupportedException();
+        public void Upload(string localPath, string remotePath, Action<long, long> progress, CancellationToken ct, long resumeOffset) => throw new NotSupportedException();
     }
 }

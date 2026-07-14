@@ -4,6 +4,7 @@ using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 using Finestra.Core;
 using Finestra.Helpers;
+using Finestra.UI;
 
 namespace Finestra.UI.Controls
 {
@@ -18,6 +19,8 @@ namespace Finestra.UI.Controls
         public event Action<ConnectionProfile> ConnectClicked;
         public event Action<ConnectionProfile> EditClicked;
         public event Action<ConnectionProfile> DeleteClicked;
+        /// <summary>FRDP-POLISH-4 — right-click → Duplicate.</summary>
+        public event Action<ConnectionProfile> DuplicateClicked;
 
         private readonly RoundedButton _connect, _edit, _delete;
 
@@ -26,6 +29,13 @@ namespace Finestra.UI.Controls
             Profile = cp;
             Height = 78;
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            // RoundedButton clears its own corners to Parent.BackColor so they blend into whatever's actually
+            // behind them (see RoundedButton.OnPaint). This row paints on TWO layers — an outer page background,
+            // then an inset rounded "card" surface the buttons actually sit on (OnPaint below) — and BackColor
+            // was never set at all, so children reading Parent.BackColor got Control's default instead of either
+            // layer: the buttons' corners rendered as visibly mismatched squares. Must track the CARD color, not
+            // the (darker) outer one, since that's the surface the buttons visually sit on.
+            BackColor = CardColor(ThemeHelper.IsDark);
 
             _connect = Btn("Connect", RoundedButtonKind.Primary, () => ConnectClicked?.Invoke(Profile));
             _edit = Btn("Edit", RoundedButtonKind.Neutral, () => EditClicked?.Invoke(Profile));
@@ -35,6 +45,14 @@ namespace Finestra.UI.Controls
             Controls.Add(_delete);
 
             ThemeHelper.ThemeChanged += OnTc;
+            MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowContextMenu(PointToScreen(e.Location)); };
+        }
+
+        private void ShowContextMenu(Point screen)
+        {
+            var menu = new ThemedContextMenuStrip { Font = FontHelper.Ui(9.5f) };
+            menu.Items.Add(new ToolStripMenuItem("Duplicate", null, (s, e) => DuplicateClicked?.Invoke(Profile)));
+            menu.Show(screen);
         }
 
         private RoundedButton Btn(string text, RoundedButtonKind kind, Action onClick)
@@ -44,7 +62,19 @@ namespace Finestra.UI.Controls
             return b;
         }
 
-        private void OnTc() { if (!IsDisposed && IsHandleCreated) { try { BeginInvoke((Action)(() => Invalidate())); } catch { } } }
+        /// <summary>The single source of truth for the card surface color — OnPaint's fill AND BackColor (so
+        /// child RoundedButtons' corner-clear matches it) both derive from here, never duplicated.</summary>
+        private static Color CardColor(bool dark) => dark ? Color.FromArgb(44, 44, 50) : Color.White;
+
+        private void OnTc()
+        {
+            if (IsDisposed) return;
+            Color card = CardColor(ThemeHelper.IsDark);
+            // A handle-less control has nothing to marshal BeginInvoke through anyway — set directly (matches the
+            // fix already applied to ThemedContextMenuStrip's identical BeginInvoke-throws-when-no-handle gap).
+            if (!IsHandleCreated) { BackColor = card; return; }
+            try { BeginInvoke((Action)(() => { BackColor = card; Invalidate(); })); } catch { }
+        }
 
         protected override void Dispose(bool disposing)
         {
@@ -71,7 +101,7 @@ namespace Finestra.UI.Controls
             g.SmoothingMode = SmoothingMode.AntiAlias;
             bool dark = ThemeHelper.IsDark;
             Color pageBg = dark ? Color.FromArgb(32, 32, 36) : Color.FromArgb(245, 245, 248);
-            Color card = dark ? Color.FromArgb(44, 44, 50) : Color.White;
+            Color card = CardColor(dark);
             Color fg = dark ? Color.FromArgb(234, 234, 238) : Color.FromArgb(28, 28, 32);
             Color sub = dark ? Color.FromArgb(150, 150, 156) : Color.FromArgb(112, 112, 120);
 

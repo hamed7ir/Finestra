@@ -47,14 +47,24 @@ namespace Finestra.UI
             if (IsDisposed) return;
             try
             {
-                BeginInvoke((Action)(() =>
-                {
-                    BackColor = ThemedMenuColors.Background;
-                    ForeColor = ThemedMenuColors.Text;
-                    Invalidate(true);
-                }));
+                // A ContextMenuStrip only HAS a handle while actually popped up — closed (the common case; a
+                // tray/tab menu isn't usually held open while the OS theme flips) means BeginInvoke throws
+                // "cannot call BeginInvoke... until the window handle has been created", which the old code
+                // swallowed silently, leaving BackColor/ForeColor stuck at whatever they were when this instance
+                // was constructed — forever, since nothing else ever refreshes them. No handle means nothing to
+                // marshal through anyway, so just set directly; the next Show() then already reflects the theme.
+                if (IsHandleCreated) BeginInvoke((Action)ApplyThemeColors);
+                else ApplyThemeColors();
             }
             catch { }
+        }
+
+        private void ApplyThemeColors()
+        {
+            if (IsDisposed) return;
+            BackColor = ThemedMenuColors.Background;
+            ForeColor = ThemedMenuColors.Text;
+            try { Invalidate(true); } catch { }
         }
 
         protected override void Dispose(bool disposing)

@@ -62,6 +62,41 @@ namespace Finestra.UI
 
             ApplyDialogTheme();
             ThemeHelper.ThemeChanged += ApplyDialogTheme;
+
+            // FIN-KEYBOARD — a short centered dialog can sit UNDER the touch keyboard; an inset isn't
+            // enough. Shift the whole form up by the overlap (shrink only if the title bar would leave
+            // the screen), and restore the exact original bounds when the keyboard goes away.
+            Core.KeyboardInset.KeyboardRectChanged += OnKeyboardRect;
+            Core.KeyboardInset.Register();
+            Disposed += (s, e) => { Core.KeyboardInset.KeyboardRectChanged -= OnKeyboardRect; Core.KeyboardInset.Unregister(); };
+        }
+
+        private bool _kbShifted;              // capture guard: bounds saved once per keyboard cycle (no drift)
+        private Rectangle _kbSavedBounds;
+
+        private void OnKeyboardRect(Rectangle kb)
+        {
+            try
+            {
+                if (IsDisposed || !Visible) return;
+                if (kb.IsEmpty)
+                {
+                    if (_kbShifted) { _kbShifted = false; Bounds = _kbSavedBounds; }   // EXACT restore
+                    return;
+                }
+                int need = Bounds.Bottom - kb.Top;
+                if (need <= 0 || !Bounds.IntersectsWith(kb)) return;   // already clear of the keyboard
+                if (!_kbShifted) { _kbSavedBounds = Bounds; _kbShifted = true; }   // save ONCE (guard)
+                Rectangle wa;
+                try { wa = Screen.FromControl(this).WorkingArea; } catch { wa = Screen.PrimaryScreen.WorkingArea; }
+                int newTop = Math.Max(wa.Top, Top - need);
+                int remain = need - (Top - newTop);
+                int newH = remain > 0 ? Math.Max(220, Height - remain) : Height;   // shrink only if shifting isn't enough
+                SuspendLayout();
+                SetBounds(Left, newTop, Width, newH);
+                ResumeLayout(true);
+            }
+            catch { /* best-effort — never break a dialog over the keyboard */ }
         }
 
         private void HeaderPaint(object sender, PaintEventArgs e)
@@ -133,6 +168,33 @@ namespace Finestra.UI
         {
             ThemeHelper.ThemeChanged -= ApplyDialogTheme;
             base.OnFormClosed(e);
+        }
+
+        // FIN-KEYBOARD — mirrors TelegArm's WM_ACTIVATE fix: on a NON-click reactivation (WA_ACTIVE — the
+        // keyboard-close returning activation, alt-tab, or the dialog's own Show), WinForms auto-restores
+        // focus to the last-focused control. If that's a text field, Windows then auto-re-shows the touch
+        // keyboard for it — the "tap the keyboard's ✕, it reappears" loop. Clear that AUTO-restored focus;
+        // a real user TAP on a field arrives via WM_LBUTTONDOWN (never plain WA_ACTIVE) and still focuses
+        // it normally. ThemedDialog is the base of every text-input dialog (connection editor, prompts,
+        // settings), so one guard here covers all of them.
+        private const int WM_ACTIVATE = 0x0006;
+        private const long WA_ACTIVE = 1;   // (low word) 0=inactive 1=active-non-click 2=click-active
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_ACTIVATE && (m.WParam.ToInt64() & 0xFFFF) == WA_ACTIVE)
+                try { BeginInvoke((Action)ClearAutoRefocusedTextField); } catch { }
+            base.WndProc(ref m);
+        }
+
+        private void ClearAutoRefocusedTextField()
+        {
+            try
+            {
+                if (IsDisposed) return;
+                if (ActiveControl is TextBoxBase) ActiveControl = null;
+            }
+            catch { }
         }
     }
 }

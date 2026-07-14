@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
 using Finestra.Helpers;
 using FluentFTP;
 using FluentFTP.Exceptions;
@@ -27,6 +28,10 @@ namespace Finestra.Core
         private FtpProtocol Variant => (_cp.Ftp ?? new FtpSettings()).Protocol;
         public string Protocol => Variant == FtpProtocol.Ftps ? "FTPS" : "FTP";
         public bool CanRename => true;
+        /// <summary>FRDP-FTP-RICH — neither FTP nor FTPS has a server-side copy verb (unlike SFTP's exec 'cp'
+        /// escape hatch) — always false. The browser falls back to a labeled download→re-upload for these.</summary>
+        public bool CanServerSideCopy => false;
+        public void CopyServerSide(string fromPath, string toPath) => throw new NotSupportedException("FTP/FTPS has no server-side copy — this should never be called (CanServerSideCopy is always false).");
 #pragma warning disable 0067   // FRDP-RECONNECT — FluentFTP has no disconnect event; FTP drops are detected op-driven by the browser
         public event Action Dropped;
 #pragma warning restore 0067
@@ -156,31 +161,69 @@ namespace Finestra.Core
 
         // FRDP-FIXSWEEP B2 — temp-then-move both directions, so a failed transfer never clobbers the good file.
         // (B9 — the whole transfer holds the semaphore, so a concurrent navigate waits instead of racing the client.)
-        public void Download(string remotePath, string localPath, Action<long, long> progress) => Locked(() =>
+        // FRDP-FTP-RICH — FluentFTP has NO CancellationToken parameter on DownloadFile/UploadFile in this version
+        // (confirmed via reflection — no async/CT overload exists at all). The progress callback is the only hook
+        // INSIDE a transfer, so cancellation is checked there by throwing — BUT empirically (Part 6, against a
+        // real FTP server) FluentFTP does NOT propagate that exception as-is: it catches whatever the callback
+        // throws and re-wraps it in a generic FtpException ("...see InnerException for more info"), so a plain
+        // "catch (OperationCanceledException)" here never fires. Unwrap it back via IsCancellation below so the
+        // CALLER's cancel/pause logic (which specifically keys off that exception type) still works — this was a
+        // real bug the verification harness caught, not a hypothetical. Resume uses FluentFTP's OWN native
+        // FtpLocalExists.Resume/FtpRemoteExists.Resume (REST) — it reads the existing partial temp file's on-disk
+        // size itself, so resumeOffset isn't threaded through explicitly here (it agrees with the temp file's real
+        // size by construction — that's exactly what "resuming a paused transfer" means).
+        public void Download(string remotePath, string localPath, Action<long, long> progress, CancellationToken ct, long resumeOffset) => Locked(() =>
         {
             long total = 0; try { total = _client.GetFileSize(remotePath); } catch { }
             string tmp = localPath + ".frdp-part";
-            try { System.IO.File.Delete(tmp); } catch { }
+            if (resumeOffset <= 0) { try { System.IO.File.Delete(tmp); } catch { } }
+            var existsMode = resumeOffset > 0 ? FtpLocalExists.Resume : FtpLocalExists.Overwrite;
             try
             {
-                var st = _client.DownloadFile(tmp, remotePath, FtpLocalExists.Overwrite, FtpVerify.None,
-                    p => { try { progress?.Invoke(p.TransferredBytes, total); } catch { } });
+                var st = _client.DownloadFile(tmp, remotePath, existsMode, FtpVerify.None,
+                    p => { if (ct.IsCancellationRequested) throw new OperationCanceledException(ct); try { progress?.Invoke(p.TransferredBytes, total); } catch { } });
                 if (st == FtpStatus.Failed) throw new System.IO.IOException("Download failed.");
                 if (System.IO.File.Exists(localPath)) System.IO.File.Replace(tmp, localPath, null);
                 else System.IO.File.Move(tmp, localPath);
             }
+            catch (OperationCanceledException) { ResyncAfterCancel(); throw; }   // temp left in place — caller's call (pause vs cancel)
+            catch (Exception ex) when (IsCancellation(ex, ct)) { ResyncAfterCancel(); throw new OperationCanceledException(ct); }
             catch { try { System.IO.File.Delete(tmp); } catch { } throw; }
         });
 
-        public void Upload(string localPath, string remotePath, Action<long, long> progress) => Locked(() =>
+        /// <summary>Walks the InnerException chain looking for the OperationCanceledException FluentFTP's own
+        /// wrapping hid — only true when the token is ALSO actually signaled, so an unrelated failure that happens
+        /// to occur near a cancel request is never misclassified as "the cancel worked".</summary>
+        private static bool IsCancellation(Exception ex, CancellationToken ct)
+        {
+            if (!ct.IsCancellationRequested) return false;
+            for (var e = ex; e != null; e = e.InnerException) if (e is OperationCanceledException) return true;
+            return false;
+        }
+
+        /// <summary>FRDP-FTP-RICH Part 6 — throwing out of the progress callback aborts OUR read/write loop, but on
+        /// a small/fast transfer the server can already have queued its "226 Transfer complete" reply before the
+        /// abort lands; that stray reply then desyncs the NEXT command's response parsing (confirmed live: a
+        /// List() right after a cancelled download intermittently failed with "Failed to get the EPSV port from:
+        /// Transfer complete."). A plain reconnect on the same FtpClient (config/cert handler stay attached) is
+        /// the cheapest reliable resync — best-effort, since a failure here just surfaces on the next real op the
+        /// same way any other dropped FTP connection already does.</summary>
+        private void ResyncAfterCancel()
+        {
+            try { _client.Disconnect(); } catch { }
+            try { _client.Connect(); } catch { }
+        }
+
+        public void Upload(string localPath, string remotePath, Action<long, long> progress, CancellationToken ct, long resumeOffset) => Locked(() =>
         {
             long total = 0; try { total = new System.IO.FileInfo(localPath).Length; } catch { }
             string tmp = remotePath + ".frdp-part";
-            try { if (_client.FileExists(tmp)) _client.DeleteFile(tmp); } catch { }
+            if (resumeOffset <= 0) { try { if (_client.FileExists(tmp)) _client.DeleteFile(tmp); } catch { } }
+            var existsMode = resumeOffset > 0 ? FtpRemoteExists.Resume : FtpRemoteExists.Overwrite;
             try
             {
-                var st = _client.UploadFile(localPath, tmp, FtpRemoteExists.Overwrite, true, FtpVerify.None,
-                    p => { try { progress?.Invoke(p.TransferredBytes, total); } catch { } });
+                var st = _client.UploadFile(localPath, tmp, existsMode, true, FtpVerify.None,
+                    p => { if (ct.IsCancellationRequested) throw new OperationCanceledException(ct); try { progress?.Invoke(p.TransferredBytes, total); } catch { } });
                 if (st == FtpStatus.Failed) throw new System.IO.IOException("Upload failed.");
                 // rename temp → final; RNTO onto an existing name may be refused → delete-then-rename; if the server
                 // refuses rename entirely, direct overwrite upload (the overwrite was already confirmed by the UI).
@@ -197,6 +240,8 @@ namespace Finestra.Core
                     }
                 }
             }
+            catch (OperationCanceledException) { ResyncAfterCancel(); throw; }
+            catch (Exception ex) when (IsCancellation(ex, ct)) { ResyncAfterCancel(); throw new OperationCanceledException(ct); }
             catch { try { if (_client.FileExists(tmp)) _client.DeleteFile(tmp); } catch { } throw; }
         });
 

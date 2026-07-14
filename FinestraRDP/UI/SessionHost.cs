@@ -120,11 +120,38 @@ namespace Finestra.UI
             public int DynFitTicks;
             public bool DynFitArmed;
 
+            /// <summary>FIN-KBD-FREEZE-SCROLL — RDP-only: the child's pan, in <see cref="ClipScrollbar"/>'s own
+            /// "0 = bottom-anchored, maxPan = top-anchored" convention. Meaningful only once
+            /// <see cref="PanEstablished"/> is true. Persists per-session across tab switches; unused for SSH/FTP.</summary>
+            public int PanOffsetY;
+            /// <summary>False until this freeze session's UNTOUCHED baseline is set (top-anchored — exactly where
+            /// FitChild already left the child, so becoming clipped never moves it on its own) or the user drags —
+            /// whichever comes first. Without this, "reset PanOffsetY to a fixed number" can't tell "untouched" from
+            /// "a real pan" apart, because the meaning of any fixed number depends on maxPan, which isn't known
+            /// until the embed area has actually shrunk (freezing and shrinking are two different moments).</summary>
+            public bool PanEstablished;
+
             /// <summary>FRDP-POLISH-2 — inferred RDP phase for the bar. Connecting → Connected (first stats line);
             /// Failed (died before ever embedding / timed out); Disconnected (died after embedding).</summary>
             public RdpPhase Phase = RdpPhase.Connecting;
             public bool EverEmbedded;
             public int ConnectTicks;
+
+            /// <summary>FRDP-RDP-LIVENESS Part 1 — DateTime.UtcNow.Ticks of the last STATS heartbeat (set the
+            /// moment the pipe is started, so total silence from the start counts too, not just going-quiet-later).
+            /// A raw long behind Interlocked, not a DateTime field: this is written from the StatsPipe reader
+            /// thread and read from the UI-thread tick — a torn 8-byte read/write is a real risk on ARM32/RT.
+            /// 0 = not yet started.</summary>
+            private long _lastStatsTicksRaw;
+            public void TouchStats() { System.Threading.Interlocked.Exchange(ref _lastStatsTicksRaw, DateTime.UtcNow.Ticks); }
+            /// <summary>Seconds since the last heartbeat, or -1 if none has ever been recorded (never started —
+            /// treated as "don't judge yet", not as infinitely stale, so a start-up race can't false-positive).</summary>
+            public double SecondsSinceLastStats()
+            {
+                long t = System.Threading.Interlocked.Read(ref _lastStatsTicksRaw);
+                if (t == 0) return -1;
+                return Math.Max(0, (DateTime.UtcNow - new DateTime(t, DateTimeKind.Utc)).TotalSeconds);
+            }
 
             /// <summary>FRDP-SSH-BUILD-2 — set for an SSH tab; null for an RDP tab. When set, this session is an
             /// app-owned terminal (no child HWND, no proc, no stats pipe) and the RDP machinery below is bypassed.
@@ -148,12 +175,19 @@ namespace Finestra.UI
         /// <summary>Then a short burst of posts; the engine dedupes once one lands.</summary>
         private const int DynFitRetries = 6;
 
+        /// <summary>FRDP-RDP-LIVENESS Part 1 — how long the STATS heartbeat can go silent before a session is
+        /// declared dead. Deliberately conservative: the engine streams ~1 line/sec while healthy, so this is a
+        /// 12-15x margin over a single missed beat — a false "dead" verdict on a merely-busy/stressed device is
+        /// worse than the frozen-tab bug this closes (see Part 2's under-load proof).</summary>
+        private const int HeartbeatDeadSeconds = 15;
+
         private readonly Form _manager;
         private bool _fullscreen;                // MUTABLE now — a host flips presentation live (FRDP-FS-TOGGLE)
         private readonly List<Session> _sessions = new List<Session>();
         private int _active = -1;
 
         private readonly Panel _embedHost;      // the /parent-window target in BOTH presentations
+        private readonly ClipPanOverlay _rdpPanOverlay;   // FIN-KBD-FREEZE-SCROLL — RDP's pan scrollbar (SSH draws its own; FTP never clips)
         private readonly OverlayBar _bar;       // the auto-hide hover bar (shown only while fullscreen)
         private readonly SessionTabBar _tabBar; // the persistent docked bar (visible only while windowed)
         private readonly Timer _hoverTimer;     // drives the overlay reveal (runs only while fullscreen)
@@ -226,7 +260,22 @@ namespace Finestra.UI
 
             Controls.Add(_embedHost);   // Fill added first → docks under the Top bar
             Controls.Add(_tabBar);      // Top; Visible is toggled by the presentation
-            _embedHost.SizeChanged += (s, e) => FitAllChildren();
+
+            // FIN-KBD-FREEZE-SCROLL — a narrow strip, positioned/shown explicitly by RefreshRdpPanOverlay (not
+            // docked — it must sit at a specific right-edge inset, and stay hidden unless the active RDP session
+            // is actually frozen+clipped). A WinForms child of _embedHost, same as the RDP child's native parent.
+            _rdpPanOverlay = new ClipPanOverlay { Visible = false };
+            _embedHost.Controls.Add(_rdpPanOverlay);
+            _rdpPanOverlay.PanChanged += OnRdpPanChanged;
+
+            _embedHost.SizeChanged += (s, e) => { FitAllChildren(); RefreshRdpPanOverlay(); };
+
+            // FIN-KEYBOARD — inset the CONTENT (not the window) while the touch keyboard covers us: the
+            // embed area shrinks exactly like a user resize, so the existing fit + Dynamic-renegotiation
+            // machinery does the rest. One debounced step, never a tween (Tegra 3 + live RDP child).
+            KeyboardInset.KeyboardRectChanged += OnKeyboardRect;
+            KeyboardInset.Register();
+            Disposed += (s, e) => { KeyboardInset.KeyboardRectChanged -= OnKeyboardRect; KeyboardInset.Unregister(); };
 
             if (_fullscreen)
             {
@@ -256,6 +305,166 @@ namespace Finestra.UI
             _allHosts.Add(this);
             FileLog.Line("[HOST] ctor mode=" + Mode + " mon=" + _mon + " embedHwnd=0x" + forceEmbed.ToInt64().ToString("X")
                 + " liveHosts=" + _liveHosts + " managerVisibleAfterHide=" + (_manager != null ? _manager.Visible.ToString() : "null"));
+        }
+
+        // ── FIN-KEYBOARD — touch-keyboard inset (bottom padding composed WITH the windowed frame) ──
+        private int _kbInset;             // current keyboard inset (0 = none)
+        private bool _kbDroppedTopMost;   // trap 3: fullscreen TopMost dropped while the keyboard is up
+
+        // ── FIN-KBD-FREEZE — session-size freeze while a keyboard is up ──────────────────────────────────
+        // The actual fix (independent of WHY the window/embed area got smaller): while frozen, the RDP child
+        // is never SetWindowPos'd, the Dynamic watchdog never renegotiates, and each SSH TerminalControl's
+        // grid is pinned — the content simply clips at the bottom (where the keyboard is anyway), instead of
+        // resizing/rescaling/renegotiating. This neutralizes BOTH our own padding-driven inset AND Windows'
+        // own native keyboard-avoidance window move (a REAL WM_ENTER/EXITSIZEMOVE the OS drives on RT 8.1,
+        // independent of anything Finestra does) — whichever one shrinks the window, frozen content ignores it.
+        private bool _sizeFrozen;
+
+        /// <summary>Freeze/unfreeze every session's size reaction. Unfreezing re-syncs ONCE, immediately, to
+        /// whatever the CURRENT embed size actually is — if that's back to the pre-freeze size (the keyboard
+        /// came and went, window unchanged), FitChild/TerminalControl find nothing changed and send nothing:
+        /// the session comes back exactly as it was, as a natural consequence, not a special case.</summary>
+        private void SetFrozen(bool frozen)
+        {
+            if (_sizeFrozen == frozen) return;
+            _sizeFrozen = frozen;
+            foreach (var s in _sessions) if (s.IsSsh) s.Ssh.SetFrozen(frozen);   // FTP needs no per-session call — see below
+            // FIN-KBD-FREEZE-SCROLL — every RDP session starts each freeze with NO established pan: becoming
+            // clipped must never move the child on its own (RefreshRdpPanOverlay's own untouched-baseline snap —
+            // see PanEstablished's doc comment — is what keeps that true; a fixed PanOffsetY reset here can't,
+            // since its meaning depends on maxPan, unknown until the embed area has actually shrunk).
+            foreach (var s in _sessions) { s.PanOffsetY = 0; s.PanEstablished = false; }
+            if (!frozen)
+            {
+                // FRDP-POLISH-4 — belt-and-suspenders: OnResize's own catch-all already re-clamps a drifted
+                // maximized window the instant it happens, but re-checking here too costs nothing (idempotent)
+                // and covers the keyboard-HIDE/UNFREEZE moment explicitly, matching how this bug was reported.
+                if (WindowState == FormWindowState.Maximized) ReassertMaximizedClamp();
+                FitAllChildren();   // RDP: resync once (no-ops if the embed size is unchanged — B22 tolerance)
+                ArmDynamicRefit();  // Dynamic sessions: one settle-gated renegotiation attempt if actually needed
+                FileLog.Line("[KBD] UNFROZEN → resync embed=" + _embedHost.ClientSize);
+            }
+            else FileLog.Line("[KBD] FROZEN embed=" + _embedHost.ClientSize);
+            RefreshRdpPanOverlay();
+        }
+
+        /// <summary>FIN-KBD-FREEZE-SCROLL — the active session's frozen content height vs. the current embed area,
+        /// if it's an RDP session with a live child. FTP/SSH sessions (no <see cref="Session.Child"/>) never clip
+        /// this way — SSH has its own pan built into <see cref="TerminalControl"/>; FTP just reflows normally.</summary>
+        private bool RdpClipInfo(Session s, out int contentH, out int maxPan)
+        {
+            contentH = 0; maxPan = 0;
+            if (s == null || s.Child == IntPtr.Zero) return false;
+            RECT r;
+            if (!GetWindowRect(s.Child, out r)) return false;
+            contentH = r.Bottom - r.Top;
+            maxPan = Math.Max(0, contentH - _embedHost.ClientSize.Height);
+            return true;
+        }
+
+        /// <summary>Repositions (never resizes — SWP_NOSIZE) the frozen RDP child to match its session's current
+        /// PanOffsetY. Moving a child via SetWindowPos generates WM_MOVE, not WM_SIZE — NudgeDynamicResize's own
+        /// analysis of wf_send_resize's four call sites confirms a plain move can't trigger a renegotiation, so
+        /// this is safe to do even while frozen.</summary>
+        private void ApplyChildPan(Session s)
+        {
+            if (s == null || s.Child == IntPtr.Zero) return;
+            int contentH, maxPan;
+            if (!RdpClipInfo(s, out contentH, out maxPan)) return;
+            int pan = Math.Max(0, Math.Min(maxPan, s.PanOffsetY));
+            s.PanOffsetY = pan;
+            int y = pan - maxPan;   // pan=0 → y=-maxPan (bottom-anchored); pan=maxPan → y=0 (top-anchored)
+            try { SetWindowPos(s.Child, IntPtr.Zero, 0, y, 0, 0, SWP_NOZORDER | SWP_NOSIZE); } catch { }
+        }
+
+        private void OnRdpPanChanged(int newPan)
+        {
+            if (_active < 0 || _active >= _sessions.Count) return;
+            _sessions[_active].PanOffsetY = newPan;
+            ApplyChildPan(_sessions[_active]);
+        }
+
+        /// <summary>FIN-KBD-FREEZE-SCROLL — shows/hides/repositions the RDP pan scrollbar for whichever session is
+        /// currently active, and (since the native RDP child paints above WinForms siblings by default — see
+        /// FitAllChildren's z-order note) explicitly forces the overlay above it whenever it should be visible.
+        /// Called on freeze/unfreeze, tab switch, and embed-area resize — every place the active session or its
+        /// clipped-ness could have changed.</summary>
+        private void RefreshRdpPanOverlay()
+        {
+            Session act = (_active >= 0 && _active < _sessions.Count) ? _sessions[_active] : null;
+            int contentH = 0, maxPan = 0;
+            bool show = _sizeFrozen && act != null && RdpClipInfo(act, out contentH, out maxPan) && maxPan > 0;
+            if (!show)
+            {
+                if (_rdpPanOverlay.Visible) _rdpPanOverlay.Visible = false;
+                return;
+            }
+
+            // First time THIS FREEZE SESSION that this session is actually clipped: snap to the untouched baseline
+            // (pan=maxPan → ApplyChildPan's y=0 — exactly where FitChild already left it) so becoming clipped is
+            // silent. Only a real drag (OnRdpPanChanged) moves it after that.
+            if (!act.PanEstablished) { act.PanOffsetY = maxPan; act.PanEstablished = true; }
+
+            var embedSize = _embedHost.ClientSize;
+            _rdpPanOverlay.Bounds = new Rectangle(embedSize.Width - ClipScrollbar.Gutter, 0, ClipScrollbar.Gutter, embedSize.Height);
+            _rdpPanOverlay.ContentHeight = contentH;
+            _rdpPanOverlay.MaxPan = maxPan;
+            _rdpPanOverlay.Pan = Math.Max(0, Math.Min(maxPan, act.PanOffsetY));
+            act.PanOffsetY = _rdpPanOverlay.Pan;
+            _rdpPanOverlay.Visible = true;
+            ApplyChildPan(act);   // re-clamp+reposition the child too, in case maxPan just shrank
+            try { BringWindowToTop(_rdpPanOverlay.Handle); } catch { }   // force above the native child in z-order
+            _rdpPanOverlay.Invalidate();
+        }
+
+        /// <summary>The presentation's base padding (fullscreen 0 / windowed Frame) composed with the
+        /// keyboard inset. The transforms call this instead of assigning Padding raw, so a fullscreen
+        /// toggle mid-keyboard keeps the inset.</summary>
+        private void ApplyFramePadding()
+        {
+            int f = _fullscreen ? 0 : Frame;
+            Padding = new Padding(f, f, f, f + _kbInset);
+        }
+
+        private void OnKeyboardRect(System.Drawing.Rectangle kb)
+        {
+            try
+            {
+                if (IsDisposed) return;
+                // FIN-KBD-FREEZE — set BEFORE the padding/layout change below, not after: ApplyFramePadding can
+                // shrink _embedHost right here, which fires SizeChanged synchronously — if _sizeFrozen were still
+                // false at that instant, FitAllChildren's guard wouldn't catch it and the child would get resized
+                // to the padded area a moment before freezing "officially" took effect (a real, if narrow, race —
+                // found via a RefreshRdpPanOverlay diagnostic during FIN-KBD-FREEZE-SCROLL verification). Freeze
+                // the instant ANY keyboard is up, not just when OUR OWN computed inset is nonzero: Windows' own
+                // native keyboard-avoidance can move/resize this window independent of the padding math below, and
+                // the freeze must neutralize that too. Unfreeze the instant the keyboard is fully gone —
+                // SetFrozen(false) does the one-time resync (itself now also guaranteed to run before any padding
+                // change reverts, for the same reason).
+                SetFrozen(!kb.IsEmpty);
+                int inset = KeyboardInset.ComputeBottomInset(this, kb);
+                if (inset != _kbInset)
+                {
+                    _kbInset = inset;
+                    SuspendLayout();
+                    ApplyFramePadding();     // _embedHost (Fill) shrinks/grows with it — sessions may clip while frozen
+                    ResumeLayout(true);
+                    FileLog.Line("[KBD] host inset=" + inset + " embed=" + _embedHost.ClientSize);
+                }
+                // Trap: a fullscreen host is TopMost — the touch keyboard could render BEHIND it,
+                // making SSH-on-tablet unusable. Drop TopMost while the keyboard is up; restore on hide.
+                if (inset > 0 && _fullscreen && TopMost)
+                {
+                    TopMost = false; _kbDroppedTopMost = true;
+                    FileLog.Line("[KBD] fullscreen TopMost dropped (keyboard up)");
+                }
+                else if (inset == 0 && _kbDroppedTopMost)
+                {
+                    _kbDroppedTopMost = false;
+                    if (_fullscreen) { TopMost = true; KeepBarOnTop(); }
+                }
+            }
+            catch { /* best-effort — never break a live session over the keyboard */ }
         }
 
         /// <summary>Client size of the embed area for the FIRST windowed session: the profile's own resolution when
@@ -502,6 +711,7 @@ namespace Finestra.UI
                     ShowWindow(child, IndexOf(s) == _active ? SW_SHOW : SW_HIDE);
                     if (IndexOf(s) == _active) FocusChild(child);
                     KeepBarOnTop();
+                    if (IndexOf(s) == _active) RefreshRdpPanOverlay();   // FIN-KBD-FREEZE-SCROLL — connecting while already frozen is a real (if narrow) case
                 }
             }
 
@@ -520,7 +730,31 @@ namespace Finestra.UI
                 return;
             }
             if (s.Proc != null && s.Proc.HasExited) { SetRdpPhase(s, RdpPhase.Disconnected); return; }   // dropped after embed
+
+            // FRDP-RDP-LIVENESS Part 1 — Proc.HasExited only catches a fully-exited process. A HUNG engine (the
+            // process is still alive, but its channel died — confirmed the mechanism for this by Part 0's harness
+            // ruling out a stale/disposed-sibling pipe reference) needs a second signal: the engine streams a
+            // STATS line ~1/sec while healthy, so sustained silence means the channel is dead even though the OS
+            // process isn't. Deliberately runs BEFORE the minimized/frozen early-returns below — those guard the
+            // resize watchdog, not liveness, and a hung session must be caught even while backgrounded or frozen.
+            // Debounced + conservative: the ONLY trigger is sustained heartbeat silence; a Send() failure is logged
+            // as corroborating context but never independently trips this (see StatsPipe.LastSendFailed).
+            if (s.Stats != null)
+            {
+                double idle = s.SecondsSinceLastStats();
+                if (idle >= HeartbeatDeadSeconds)
+                {
+                    FileLog.Line("[HOST] rdp heartbeat DEAD pid=" + s.Stats.Pid + " (no STATS for " + idle.ToString("0.0") + "s"
+                        + (s.Stats.LastSendFailed ? ", + a failed write" : "") + ") — " + s.Name);
+                    try { s.Stats?.Dispose(); } catch { }
+                    try { if (s.Proc != null && !s.Proc.HasExited) s.Proc.Kill(); } catch { }   // FRDP-FIXSWEEP B7 — reap the hung engine, don't leave a zombie
+                    SetRdpPhase(s, RdpPhase.Disconnected);
+                    return;
+                }
+            }
+
             if (WindowState == FormWindowState.Minimized) return;
+            if (_sizeFrozen) return;   // FIN-KBD-FREEZE — the watchdog re-fit/renegotiate is exactly what freezing must suppress
 
             // WATCHDOG. wfreerdp sizes its OWN window in wf_resize_window() right after creating it (wf_client.c:593),
             // which can land AFTER our first FitChild and shrink the child back to the session size (a 1280x720 session
@@ -575,6 +809,7 @@ namespace Finestra.UI
             try
             {
                 s.Stats = new StatsPipe(s.Proc.Id);
+                s.TouchStats();   // FRDP-RDP-LIVENESS Part 1 — baseline NOW, so total silence from the start counts too
                 // Route to whichever host owns the session NOW (it may have been torn into another window). The
                 // StatsPipe can't be recreated — wfreerdp's pipe is one client, one shot — so this single
                 // subscription must follow the session, via s.Owner, for its whole life.
@@ -589,6 +824,7 @@ namespace Finestra.UI
 
         private void OnStats(Session s, int rtt, int bw, int jit)
         {
+            s.TouchStats();   // FRDP-RDP-LIVENESS Part 1 — runs on the StatsPipe reader thread, same as every other write here
             string bwStr = bw >= 1000 ? (bw / 1000.0).ToString("0.0") + " Mbps" : bw + " kbps";
             s.LastStats = "rtt " + rtt + " ms · " + bwStr + " · jit " + jit;
             if (IsDisposed) return;
@@ -633,7 +869,9 @@ namespace Finestra.UI
             s.Paused = !s.Paused;
             if (s.Paused) s.Stats.Pause(); else s.Stats.Resume();
             Ui.SetPaused(s.Paused);
-            FileLog.Line("[STATS] " + (s.Paused ? "PAUSE (suppress output)" : "RESUME (allow + refresh)") + " — " + s.Name);
+            // FRDP-RDP-LIVENESS Part 0 — the session NAME alone is ambiguous (two tabs to the same profile are
+            // both "us2"); the pid is what actually identifies which live session this Pause/Resume acted on.
+            FileLog.Line("[STATS pid=" + s.Stats.Pid + "] " + (s.Paused ? "PAUSE (suppress output)" : "RESUME (allow + refresh)") + " — " + s.Name);
         }
 
         private void SetActive(int i)
@@ -650,13 +888,18 @@ namespace Finestra.UI
             var act = _sessions[i];
             if (act.IsSsh) act.Ssh.Focus();
             else if (act.IsFtp) act.Ftp.Focus();
-            else if (act.Child != IntPtr.Zero) { FitChild(act.Child); FocusChild(act.Child); }
+            // FIN-KBD-FREEZE — a tab switch used to call FitChild unconditionally, which forces the child back to
+            // _embedHost.ClientSize: switching TO an RDP tab while frozen+clipped would silently un-freeze that
+            // tab's size the moment it became active. RefreshRdpPanOverlay (below) re-applies this tab's own pan
+            // instead, which repositions (never resizes) the child — the freeze contract holds across tab switches.
+            else if (act.Child != IntPtr.Zero) { if (!_sizeFrozen) FitChild(act.Child); FocusChild(act.Child); }
             Ui.SetActive(i);
             Ui.SetStats(act.IsSsh ? act.Ssh.StatusText : act.IsFtp ? act.Ftp.StatusText : RdpBarText(act));   // RDP: connecting… / stats / failed
             Ui.SetPaused(act.Paused);
             Ui.SetPauseVisible(!act.IsSsh && !act.IsFtp);   // only RDP has pause/resume
             PushReconnect(act);   // FRDP-RECONNECT — show/hide the Reconnect button for the newly-active tab
             KeepBarOnTop();
+            RefreshRdpPanOverlay();
             FileLog.Line("[HOST] active tab=" + i + " (" + act.Name + ") of " + _sessions.Count + " mode=" + Mode);
         }
 
@@ -676,6 +919,10 @@ namespace Finestra.UI
             else if (s.IsFtp) { try { s.Ftp.Dispose(); } catch { } }
             else
             {
+                // FRDP-RDP-LIVENESS Part 0 — when a same-named sibling tab's stats pipe gets torn down matters:
+                // correlate this timestamp against any later "[STATS pid=…] send failed" to tell a live session's
+                // own dead channel apart from a write that (were it ever possible) reached a disposed sibling's.
+                if (s.Stats != null) FileLog.Line("[STATS pid=" + s.Stats.Pid + "] disposed (tab closed) — " + s.Name);
                 try { s.Stats?.Dispose(); } catch { }
                 try { if (s.Proc != null && !s.Proc.HasExited) s.Proc.Kill(); } catch { }
                 try { s.Proc?.Dispose(); } catch { }   // FRDP-FIXSWEEP B17 — release the Process handle/plumbing
@@ -948,6 +1195,9 @@ namespace Finestra.UI
 
         private void EnterFullscreenLive()
         {
+            // FIN-KBD-FREEZE — a deliberate presentation change always wins over an in-flight keyboard freeze:
+            // cancel it FIRST so this method's own FitAllChildren()/ArmDynamicRefit() below actually run.
+            if (_sizeFrozen) SetFrozen(false);
             _switching = true;
             try
             {
@@ -960,7 +1210,7 @@ namespace Finestra.UI
 
                 SuspendLayout();
                 _tabBar.Visible = false;                   // Dock=Top invisible → _embedHost (Fill) fills the monitor
-                Padding = new Padding(0);
+                ApplyFramePadding();                       // 0 frame + any live keyboard inset (FIN-KEYBOARD)
                 BackColor = Color.Black;
                 ResumeLayout(true);
 
@@ -978,6 +1228,8 @@ namespace Finestra.UI
 
         private void ExitFullscreenLive()
         {
+            // FIN-KBD-FREEZE — same reasoning as EnterFullscreenLive: a deliberate action cancels the freeze.
+            if (_sizeFrozen) SetFrozen(false);
             _switching = true;
             try
             {
@@ -987,7 +1239,7 @@ namespace Finestra.UI
 
                 SuspendLayout();
                 BackColor = ThemeHelper.GetWindowsAccentColor();
-                Padding = new Padding(Frame);
+                ApplyFramePadding();                       // Frame + any live keyboard inset (FIN-KEYBOARD)
                 _tabBar.Visible = true;
                 ResumeLayout(true);
 
@@ -1060,6 +1312,8 @@ namespace Finestra.UI
 
         private void ToggleMaximize()
         {
+            // FIN-KBD-FREEZE — same reasoning: a deliberate maximize/restore click cancels the freeze first.
+            if (_sizeFrozen) SetFrozen(false);
             WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
             Ui.SetMaximized(WindowState == FormWindowState.Maximized);
             NudgeDynamicResize();   // WindowState changes never raise OnResizeEnd
@@ -1130,9 +1384,39 @@ namespace Finestra.UI
             else if (!minimized)
             {
                 Ui.SetMaximized(WindowState == FormWindowState.Maximized);
+                // FRDP-POLISH-4 — a borderless MAXIMIZED window's bounds can drift off the work area (covering the
+                // taskbar) when Windows nudges it for its own touch-keyboard avoidance — this can happen with our
+                // own freeze mechanism bypassed entirely (hardware-keyboard suppression means no SetFrozen(false)
+                // ever runs). Catch it AT THE SOURCE: any resize while maximized re-checks the true work area and
+                // snaps back if it drifted. Idempotent (Bounds already correct → no-op, no re-entrant loop).
+                if (WindowState == FormWindowState.Maximized) ReassertMaximizedClamp();
                 FitAllChildren();   // the child tracks the host: refill the area below the bar
             }
             _wasMinimized = minimized;
+        }
+
+        /// <summary>FRDP-POLISH-4 — re-derive the CURRENT monitor's work area (same source <see
+        /// cref="ConstrainMaximize"/> uses for the initial maximize) and snap <see cref="Form.Bounds"/> back onto
+        /// it if it drifted. A borderless maximized window owns its own geometry — nothing else re-asserts this
+        /// after the initial WM_GETMINMAXINFO-driven maximize, so a later OS-driven move (the touch keyboard
+        /// changing the work area, then reverting) can leave it covering the taskbar with no self-correction.</summary>
+        private void ReassertMaximizedClamp()
+        {
+            try
+            {
+                IntPtr mon = MonitorFromWindow(Handle, MONITOR_DEFAULTTONEAREST);
+                if (mon == IntPtr.Zero) return;
+                var mi = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
+                if (!GetMonitorInfo(mon, ref mi)) return;
+                RECT work = mi.rcWork;
+                var correct = new Rectangle(work.Left, work.Top, work.Right - work.Left, work.Bottom - work.Top);
+                if (Bounds != correct)
+                {
+                    FileLog.Line("[HOST] maximized bounds drifted from work area (" + Bounds + " -> " + correct + ") — re-clamping");
+                    Bounds = correct;
+                }
+            }
+            catch { /* best-effort — never break a resize over this */ }
         }
 
         /// <summary>Fires once the modal move/resize loop ends — the honest place to record the new geometry.</summary>
@@ -1140,6 +1424,7 @@ namespace Finestra.UI
         {
             base.OnResizeEnd(e);
             if (_fullscreen || _embedHost == null) return;
+            if (_sizeFrozen) { FileLog.Line("[KBD] resize-end IGNORED (frozen) bounds=" + Bounds); return; }
             FitAllChildren();
             NudgeDynamicResize();
             FileLog.Line("[HOST] resize-end bounds=" + Bounds + " embed=" + _embedHost.ClientSize);
@@ -1209,6 +1494,7 @@ namespace Finestra.UI
 
         private void FitAllChildren()
         {
+            if (_sizeFrozen) return;   // FIN-KBD-FREEZE — sessions pinned; content clips instead of resizing
             foreach (var s in _sessions)
                 if (s.Child != IntPtr.Zero) FitChild(s.Child);
             // FitChild shows each child (SWP_SHOWWINDOW), so a hidden RDP tab can re-surface and bleed OVER an active
@@ -1238,6 +1524,7 @@ namespace Finestra.UI
         /// </summary>
         private void NudgeDynamicResize()
         {
+            if (_sizeFrozen) return;   // FIN-KBD-FREEZE — no renegotiation while frozen
             foreach (var s in _sessions)
             {
                 if (s.Child == IntPtr.Zero || !IsDynamic(s)) continue;
@@ -1296,7 +1583,22 @@ namespace Finestra.UI
                     return;
                 }
             }
+            // FIN-KEYBOARD — same WA_ACTIVE auto-refocus guard as ThemedDialog (see there for the full
+            // rationale): the FTP pane's path textboxes are the only TextBoxBase controls a SessionHost
+            // can have focused, so this only ever fires for them — RDP (native child) and SSH (owner-drawn
+            // TerminalControl, not a TextBoxBase) are untouched. Checked unconditionally (fullscreen or not).
+            if (m.Msg == WM_ACTIVATE && (m.WParam.ToInt64() & 0xFFFF) == WA_ACTIVE)
+                try { BeginInvoke((Action)ClearAutoRefocusedTextField); } catch { }
             base.WndProc(ref m);
+        }
+
+        private const int WM_ACTIVATE = 0x0006;
+        private const long WA_ACTIVE = 1;
+
+        private void ClearAutoRefocusedTextField()
+        {
+            try { if (!IsDisposed && ActiveControl is TextBoxBase) ActiveControl = null; }
+            catch { }
         }
 
         private int HitTestFrame(Point p)

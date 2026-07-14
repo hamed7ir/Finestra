@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -30,6 +31,7 @@ namespace Finestra.UI
         private RoundedButton _newBtn, _newBtn2;
         private Panel _listHost, _topBar;
         private Label _listTitle;
+        private TextBox _searchBox;
         private ThemedScrollPanel _listScroll;
         private ThemedContextMenuStrip _flyout;
         private ToolStripMenuItem _miSystem, _miLight, _miDark;
@@ -67,6 +69,27 @@ namespace Finestra.UI
             RefreshConnections();
             ThemeHelper.ThemeChanged += ApplyTheme;
             ThemeHelper.StartListening();
+
+            // FIN-KEYBOARD — bottom-inset the content while the touch keyboard covers us (the list just
+            // gets shorter). One debounced step; exact restore is Padding 0.
+            KeyboardInset.KeyboardRectChanged += OnKeyboardRect;
+            KeyboardInset.Register();
+            Disposed += (s, e) => { KeyboardInset.KeyboardRectChanged -= OnKeyboardRect; KeyboardInset.Unregister(); };
+        }
+
+        private void OnKeyboardRect(Rectangle kb)
+        {
+            try
+            {
+                if (IsDisposed) return;
+                int inset = KeyboardInset.ComputeBottomInset(this, kb);
+                if (Padding.Bottom == inset) return;
+                SuspendLayout();
+                Padding = new Padding(0, 0, 0, inset);   // docked content (_content, Fill) respects form Padding
+                ResumeLayout(true);
+                FileLog.Line("[KBD] manager inset=" + inset);
+            }
+            catch { /* best-effort — never break the shell over the keyboard */ }
         }
 
         /// <summary>Start hidden when launched with /tray: suppress the very first Show so no window flashes.</summary>
@@ -150,7 +173,13 @@ namespace Finestra.UI
             _newBtn2.Click += (s, e) => NewConnection();
             var newWrap = new Panel { Dock = DockStyle.Right, Width = 116, Padding = new Padding(8, 10, 16, 10) };
             newWrap.Controls.Add(_newBtn2);
+            // FRDP-POLISH-4 — search/filter, live as you type (case-insensitive, matches name OR host).
+            _searchBox = new TextBox { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, Font = FontHelper.Ui(9.75f) };
+            _searchBox.TextChanged += (s, e) => RefreshConnections();
+            var searchWrap = new Panel { Dock = DockStyle.Right, Width = 200, Padding = new Padding(4, 14, 4, 14) };
+            searchWrap.Controls.Add(_searchBox);
             _topBar.Controls.Add(_listTitle);
+            _topBar.Controls.Add(searchWrap);
             _topBar.Controls.Add(newWrap);
             _listScroll = new ThemedScrollPanel { Dock = DockStyle.Fill };
             _listHost.Controls.Add(_listScroll);
@@ -169,10 +198,17 @@ namespace Finestra.UI
             _listHost.Visible = any;
             if (!any) return;
 
+            // FRDP-POLISH-4 — search/filter is on TOTAL count above (a filter matching nothing must show an empty
+            // LIST, not the "no connections yet" first-run empty state — those mean different things).
+            string q = (_searchBox?.Text ?? "").Trim();
+            var shown = q.Length == 0 ? items :
+                items.Where(cp => (cp.Name ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0
+                                || (cp.Host ?? "").IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
+
             _listScroll.Host.Controls.Clear();
             int y = 8;
             int w = Math.Max(10, _listScroll.Host.ClientSize.Width);
-            foreach (var cp in items)
+            foreach (var cp in shown)
             {
                 var row = new ConnectionRow(cp)
                 {
@@ -183,6 +219,7 @@ namespace Finestra.UI
                 row.ConnectClicked += Connect;
                 row.EditClicked += EditConnection;
                 row.DeleteClicked += DeleteConnection;
+                row.DuplicateClicked += DuplicateConnection;
                 _listScroll.Host.Controls.Add(row);
                 y += row.Height + 8;
             }
@@ -217,6 +254,16 @@ namespace Finestra.UI
                 ConnectionStore.Instance.Remove(cp.Id);
                 RefreshConnections();
             }
+        }
+
+        /// <summary>FRDP-POLISH-4 — right-click → Duplicate: a new profile, new Id, "(copy)" appended to the
+        /// display name so the two are never confused in the list at a glance.</summary>
+        private void DuplicateConnection(ConnectionProfile cp)
+        {
+            var dup = cp.Clone();
+            dup.Name = (string.IsNullOrEmpty(cp.Name) ? cp.Host : cp.Name) + " (copy)";
+            ConnectionStore.Instance.AddOrUpdate(dup);
+            RefreshConnections();
         }
 
         private void Connect(ConnectionProfile cp)
@@ -325,6 +372,7 @@ namespace Finestra.UI
             _listHost.BackColor = bg;
             _topBar.BackColor = bg;
             _listTitle.ForeColor = fg;
+            if (_searchBox != null) { _searchBox.BackColor = dark ? Color.FromArgb(44, 44, 50) : Color.White; _searchBox.ForeColor = fg; }
 
             _header.Invalidate(true);
             _menuBtn.Invalidate(); _closeBtn.Invalidate();

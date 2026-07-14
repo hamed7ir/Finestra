@@ -99,6 +99,7 @@
     <Compile Include="Core\FtpModels.cs" />
     <Compile Include="Core\IRemoteFileSystem.cs" />
     <Compile Include="Core\JobGuard.cs" />
+    <Compile Include="Core\KeyboardInset.cs" />
     <Compile Include="Core\KnownCerts.cs" />
     <Compile Include="Core\KnownHosts.cs" />
     <Compile Include="Core\LocalFileSystem.cs" />
@@ -133,9 +134,12 @@
     <Compile Include="UI\FtpContent.cs" />
     <Compile Include="UI\HostKeyDialog.cs" />
     <Compile Include="UI\InputDialog.cs" />
+    <Compile Include="UI\KnownCertsForm.cs" />
     <Compile Include="UI\KnownHostsForm.cs" />
     <Compile Include="UI\PassphrasePrompt.cs" />
     <Compile Include="UI\Controls\ConnectionRow.cs" />
+    <Compile Include="UI\Controls\ClipPanOverlay.cs" />
+    <Compile Include="UI\Controls\ClipScrollbar.cs" />
     <Compile Include="UI\Controls\DragGhost.cs" />
     <Compile Include="UI\Controls\FileBrowserPane.cs" />
     <Compile Include="UI\Controls\FtpBrowserControl.cs" />
@@ -147,6 +151,7 @@
     <Compile Include="UI\Controls\TerminalControl.cs" />
     <Compile Include="UI\Controls\TypeGlyph.cs" />
     <Compile Include="UI\Controls\ThemedFileList.cs" />
+    <Compile Include="UI\Controls\ThemedProgressBar.cs" />
     <Compile Include="UI\Controls\ThemedScrollPanel.cs" />
     <Compile Include="UI\MainForm.cs" />
     <Compile Include="UI\OverlayBar.cs" />

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace Finestra.Core
 {
@@ -45,6 +46,13 @@ namespace Finestra.Core
         string Protocol { get; }                 // "SFTP" | "FTPS" | "FTP" | "Local"
         bool CanRename { get; }
 
+        /// <summary>FRDP-FTP-RICH — true if this backend can copy a file/dir WITHOUT moving bytes off the server
+        /// (SFTP: an exec 'cp', capability-checked at connect; Local: a plain same-disk copy). False means Paste
+        /// in the SAME filesystem falls back to a labeled download→re-upload (or is disabled) — see
+        /// <see cref="CopyServerSide"/>'s own doc for which. Neither FTP nor FTPS ever support this — the
+        /// protocols themselves have no copy verb.</summary>
+        bool CanServerSideCopy { get; }
+
         void Connect();                          // may prompt via the injected IRemotePrompts; throws RemoteFsException
         string HomeDirectory { get; }
 
@@ -60,14 +68,28 @@ namespace Finestra.Core
         /// transfer replaces it — FRDP-FIXSWEEP B2). Never throws: any failure ⇒ false.</summary>
         bool Exists(string path);
 
+        /// <summary>FRDP-FTP-RICH — copy WITHIN this filesystem, no bytes crossing the network to/from this PC.
+        /// Only ever called when <see cref="CanServerSideCopy"/> is true; throws <see cref="NotSupportedException"/>
+        /// otherwise (callers must check the flag first — this is the one interface method that isn't safe to call
+        /// unconditionally, exactly because not every backend can do it).</summary>
+        void CopyServerSide(string fromPath, string toPath);
+
         /// <summary>FRDP-RECONNECT — the transport dropped (event-driven, e.g. SFTP ErrorOccurred). May never fire for
         /// backends without a disconnect event (plain FTP) — those are detected op-driven by the browser instead.</summary>
         event Action Dropped;
 
-        /// <summary>Move bytes between this (remote) filesystem and the LOCAL disk. Progress is (bytesDone, bytesTotal).
+        /// <summary>Move bytes between this (remote) filesystem and the LOCAL disk. Progress is (bytesDone, bytesTotal)
+        /// — bytesDone is ABSOLUTE (includes resumeOffset), so a caller resuming a paused transfer sees a
+        /// continuously-increasing count, not one that resets to 0. <paramref name="resumeOffset"/> &gt; 0 continues
+        /// a previously-paused transfer's existing partial temp file instead of starting over; 0 is a normal transfer.
+        /// <paramref name="ct"/> cancellation leaves the partial temp file in place when <paramref name="resumeOffset"/>
+        /// capture is the caller's intent (pause) — callers that want a clean cancel (no resume) delete the temp
+        /// file themselves after catching <see cref="OperationCanceledException"/>, matching the existing FIXSWEEP-B2
+        /// temp-then-atomic-rename contract (the ORIGINAL destination file is never touched either way).
         /// Only the remote backends implement these; <see cref="LocalFileSystem"/> stubs them (the browser always
-        /// routes a transfer through the remote side).</summary>
-        void Download(string remotePath, string localPath, Action<long, long> progress);
-        void Upload(string localPath, string remotePath, Action<long, long> progress);
+        /// routes a cross-pane transfer through the remote side; a same-pane Local copy goes through
+        /// <see cref="CopyServerSide"/> instead).</summary>
+        void Download(string remotePath, string localPath, Action<long, long> progress, CancellationToken ct, long resumeOffset);
+        void Upload(string localPath, string remotePath, Action<long, long> progress, CancellationToken ct, long resumeOffset);
     }
 }

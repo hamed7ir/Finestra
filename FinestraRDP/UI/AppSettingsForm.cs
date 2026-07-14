@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -24,6 +25,10 @@ namespace Finestra.UI
         private readonly ChoiceRow _oversize;
         private readonly ChoiceRow _closeAction;
         private readonly ToggleRow _startup;
+        private readonly ToggleRow _kbResize;            // FIN-KEYBOARD — the escape hatch (default on)
+#if DEBUG
+        private readonly ToggleRow _kbIgnoreHw;          // FIN-KBD-FREEZE Part 2 — diagnostic-only, never in Release
+#endif
         private readonly ResolutionPicker _resPicker;
         private readonly SettingsProfile _defaults;
         private readonly ToggleRow _termColors;         // FRDP-POLISH-2 — global terminal defaults for new SSH connections
@@ -75,6 +80,12 @@ namespace Finestra.UI
             // run-at-startup. The folder button opens the Documents\Finestra data dir in Explorer.
             _closeAction = new ChoiceRow("When I close the window", CloseActionOptions, (int)Startup.ParseCloseAction(s.CloseAction)) { ValueWidth = 200 };
             _startup = new ToggleRow("Run at Windows startup (starts minimized to tray)", s.RunOnStartup);
+            _kbResize = new ToggleRow("Make room for the touch keyboard (RT)", s.KeyboardAutoResize);
+#if DEBUG
+            // FIN-KBD-FREEZE Part 2 — a single device trip both diagnoses AND confirms whether the
+            // "hardware keyboard attached" heuristic is why detection never fires: flip this, no rebuild needed.
+            _kbIgnoreHw = new ToggleRow("  Ignore hardware-keyboard check (diagnostic)", s.KeyboardIgnoreHardwareCheck);
+#endif
             var openFolder = new RoundedButton { Text = "Open settings folder", Kind = RoundedButtonKind.Neutral, Height = 40, Font = FontHelper.Ui(10f, FontStyle.Bold) };
             openFolder.Click += (a, b) => { try { Process.Start("explorer.exe", StoragePaths.AppDataDir); } catch { } };
 
@@ -82,20 +93,36 @@ namespace Finestra.UI
             var knownHosts = new RoundedButton { Text = "Manage known hosts…", Kind = RoundedButtonKind.Neutral, Height = 40, Font = FontHelper.Ui(10f, FontStyle.Bold) };
             knownHosts.Click += (a, b) => { using (var f = new KnownHostsForm()) f.ShowDialog(this); };
 
+            // FTPS certificate trust store (TOFU) — FRDP-POLISH-4: previously had NO management view at all, so a
+            // wrongly-trusted (or since-revoked) certificate could never be un-trusted.
+            var knownCerts = new RoundedButton { Text = "Manage known certificates…", Kind = RoundedButtonKind.Neutral, Height = 40, Font = FontHelper.Ui(10f, FontStyle.Bold) };
+            knownCerts.Click += (a, b) => { using (var f = new KnownCertsForm()) f.ShowDialog(this); };
+
             // Terminal appearance defaults — copied into each NEW SSH connection; editing here doesn't touch existing.
             var td = s.TerminalDefaults ?? new TerminalPrefs();
             _termColors = new ToggleRow("Terminal colours", td.Colors);
             _termFont = new TextRow("Terminal font size (" + TerminalPrefs.MinFont + "–" + TerminalPrefs.MaxFont + ")", td.FontSize.ToString(), numeric: true);
             _termScrollback = new TextRow("Scrollback lines", td.ScrollbackLines.ToString(), numeric: true);
 
-            PopulateBody(
+            var rows = new List<Control>
+            {
                 new SectionHeader("wfreerdp"), _path, browse, autodetect,
                 new SectionHeader("Session"), _connectMode, connectHint,
                 new SectionHeader("Default resolution (new servers)"), _resPicker, _oversize,
-                new SectionHeader("App behaviour"), _closeAction, _startup, openFolder,
+                new SectionHeader("App behaviour"), _closeAction, _startup, _kbResize,
+            };
+#if DEBUG
+            rows.Add(_kbIgnoreHw);
+#endif
+            rows.Add(openFolder);
+            rows.AddRange(new Control[]
+            {
                 new SectionHeader("SSH security"), knownHosts,
+                new SectionHeader("FTPS security"), knownCerts,
                 new SectionHeader("Terminal defaults (new SSH connections)"), _termColors, _termFont, _termScrollback,
-                new SectionHeader("Display"), _dpi);
+                new SectionHeader("Display"), _dpi
+            });
+            PopulateBody(rows.ToArray());
 
             var save = AddFooterButton("Save", RoundedButtonKind.Primary, DialogResult.None);
             save.Click += (a, b) => OnSave();
@@ -116,6 +143,10 @@ namespace Finestra.UI
             s.ConnectMode = _connectMode.SelectedIndex == 1 ? "Window" : "Embed";
             s.CloseAction = ((CloseAction)_closeAction.SelectedIndex).ToString();
             s.RunOnStartup = _startup.On;
+            s.KeyboardAutoResize = _kbResize.On;
+#if DEBUG
+            s.KeyboardIgnoreHardwareCheck = _kbIgnoreHw.On;
+#endif
             s.Defaults = _defaults;   // the picker mutated this clone → commit the new-server resolution default
             s.TerminalDefaults = new TerminalPrefs
             {
@@ -125,6 +156,7 @@ namespace Finestra.UI
             };
             s.Save();
             Startup.Apply(s.RunOnStartup);   // write/remove the HKCU Run key to match the setting
+            KeyboardInset.RefreshRunning();  // toggled off → the poller stops now; toggled on → next Register starts it
             WfreerdpChanged = !string.Equals(newPath, _origPath, StringComparison.OrdinalIgnoreCase);
             DialogResult = DialogResult.OK;
         }

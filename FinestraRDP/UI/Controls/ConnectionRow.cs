@@ -22,7 +22,7 @@ namespace Finestra.UI.Controls
         /// <summary>FRDP-POLISH-4 — right-click → Duplicate.</summary>
         public event Action<ConnectionProfile> DuplicateClicked;
 
-        private readonly RoundedButton _connect, _edit, _delete;
+        private readonly RoundedButton _connect, _edit, _delete, _copy;
 
         public ConnectionRow(ConnectionProfile cp)
         {
@@ -40,9 +40,15 @@ namespace Finestra.UI.Controls
             _connect = Btn("Connect", RoundedButtonKind.Primary, () => ConnectClicked?.Invoke(Profile));
             _edit = Btn("Edit", RoundedButtonKind.Neutral, () => EditClicked?.Invoke(Profile));
             _delete = Btn("Delete", RoundedButtonKind.Danger, () => DeleteClicked?.Invoke(Profile));
+            // FRDP — Duplicate previously lived ONLY on the right-click menu below, which touch users (no
+            // right-click gesture) have no way to reach — the same discoverability gap already solved for SSH
+            // tabs via a visible "⋮" glyph. A real button here is more consistent with this row's OWN existing
+            // architecture (RoundedButton child controls, not SessionTabBar's manual hit-test rectangles).
+            _copy = Btn("Copy", RoundedButtonKind.Neutral, () => DuplicateClicked?.Invoke(Profile));
             Controls.Add(_connect);
             Controls.Add(_edit);
             Controls.Add(_delete);
+            Controls.Add(_copy);
 
             ThemeHelper.ThemeChanged += OnTc;
             MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowContextMenu(PointToScreen(e.Location)); };
@@ -85,14 +91,15 @@ namespace Finestra.UI.Controls
         protected override void OnLayout(LayoutEventArgs e)
         {
             base.OnLayout(e);
-            if (_connect == null || _edit == null || _delete == null) return;   // Height set in ctor fires layout early
+            if (_connect == null || _edit == null || _delete == null || _copy == null) return;   // Height set in ctor fires layout early
             const int m = 10;
-            int cw = 96, ew = 66, dw = 72, gap = 8;
+            int cw = 96, ew = 66, dw = 72, pw = 66, gap = 8;
             int cy = (Height - 34) / 2;
             int x = Width - m - cw;
             _connect.SetBounds(x, cy, cw, 34);
             x -= gap + ew; _edit.SetBounds(x, cy, ew, 34);
             x -= gap + dw; _delete.SetBounds(x, cy, dw, 34);
+            x -= gap + pw; _copy.SetBounds(x, cy, pw, 34);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -116,7 +123,7 @@ namespace Finestra.UI.Controls
             g.DrawImageUnscaled(glyph, 14, card_r.Top + (card_r.Height - tile) / 2);
 
             int textLeft = 14 + tile + 12;
-            int textRight = _delete.Left - 12;
+            int textRight = _copy.Left - 12;
             var nameR = new Rectangle(textLeft, 12, Math.Max(1, textRight - textLeft), 24);
             var subR = new Rectangle(textLeft, 38, Math.Max(1, textRight - textLeft), 22);
             using (var nf = FontHelper.Ui(12f, FontStyle.Bold))

@@ -351,7 +351,7 @@ namespace Finestra.Core
         }
         private static string AudioValue(AudioOpt a)
         {
-            switch (a) { case AudioOpt.None: return "0"; case AudioOpt.PlayLocal: return "1"; case AudioOpt.PlayRemote: return "2"; default: return null; }
+            switch (a) { case AudioOpt.PlayLocal: return "0"; case AudioOpt.PlayRemote: return "1"; case AudioOpt.None: return "2"; default: return null; }
         }
         private static string SecurityValue(SecurityOpt s)
         {

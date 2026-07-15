@@ -10,7 +10,7 @@ namespace Finestra.Core
     /// <summary>/network:&lt;type&gt; — connection type. Default emits nothing.</summary>
     public enum NetworkOpt { Default, Modem, BroadbandLow, Broadband, BroadbandHigh, Wan, Lan, Auto }
 
-    /// <summary>/audio-mode:&lt;n&gt; — 0=none, 1=redirect(play locally), 2=server(play on remote). Default emits nothing.</summary>
+    /// <summary>/audio-mode:&lt;n&gt; — 0=redirect(play locally), 1=server(play on remote), 2=none. Default emits nothing.</summary>
     public enum AudioOpt { Default, PlayLocal, PlayRemote, None }
 
     /// <summary>/bpp:&lt;depth&gt; — session color depth. Default emits nothing.</summary>

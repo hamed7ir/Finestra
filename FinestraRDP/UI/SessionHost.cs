@@ -21,9 +21,13 @@ namespace Finestra.UI
     ///  • <b>Fullscreen OFF</b> — a normal RESIZABLE window whose PERSISTENT <see cref="SessionTabBar"/> is docked
     ///    at the top and doubles as the title bar (drag to move, double-press to maximize, Min/Restore/Close).
     ///
-    /// Both embed into <see cref="_embedHost"/>, a plain child Panel that is the <c>/parent-window</c> target, so
-    /// the child is sized by one code path (<see cref="FitChild"/>) in both modes. wfreerdp itself shows no chrome.
-    /// The live stats pipe and pause/resume (FRDP-STATS-RECON) ride along unchanged in either bar.
+    /// SSH/FTP embed straight into <see cref="_embedHost"/>. RDP does too, visually — but each RDP session gets
+    /// its OWN dedicated <see cref="Session.RdpParent"/> panel (Dock=Fill inside <see cref="_embedHost"/>, so
+    /// identically sized) as its actual <c>/parent-window</c> target, not <see cref="_embedHost"/> itself
+    /// (FRDP-RDP-KBD-FIX — see <see cref="AddSession"/>'s doc comment for why sharing one target across sibling
+    /// RDP tabs is a real keyboard-routing hazard, not just a naming nicety). Either way the child is sized by
+    /// one code path (<see cref="FitChild"/>) in both presentations. wfreerdp itself shows no chrome. The live
+    /// stats pipe and pause/resume (FRDP-STATS-RECON) ride along unchanged in either bar.
     /// </summary>
     public sealed class SessionHost : Form
     {
@@ -104,6 +108,11 @@ namespace Finestra.UI
             public ConnectionProfile Profile;
             public Process Proc;
             public IntPtr Child;
+            /// <summary>FRDP-RDP-KBD-FIX — this session's OWN dedicated /parent-window target (Dock=Fill inside
+            /// the owning host's _embedHost, so it's always the same size — see FitChild). RDP-only; null for
+            /// SSH/FTP, which embed straight into the shared _embedHost. Never shared across sessions — see the
+            /// doc comment on AddSession for why a shared parent would be a real (not theoretical) bug.</summary>
+            public Panel RdpParent;
             public StatsPipe Stats;
             public bool Paused;
             public string LastStats = "—";
@@ -551,16 +560,34 @@ namespace Finestra.UI
             Size native = _fullscreen ? _mon.Size : _embedHost.ClientSize;
             if (native.Width <= 0 || native.Height <= 0) native = _mon.Size;
 
-            var res = RdpLauncher.Launch(cp, native.Width, native.Height, true, _embedHost.Handle);
+            // FRDP-RDP-KBD-FIX — a dedicated panel per RDP session, not the shared _embedHost, as THIS session's
+            // /parent-window target. Why this matters (found via a real device report + a live focus-state probe,
+            // not guessed): FreeRDP's embedded-mode keyboard hook (wf_ll_kbd_proc, wf_event.c) only forwards a
+            // keystroke when the system's current keyboard-focus HWND equals wfc->hWndParent EXACTLY — Finestra
+            // was focusing the RDP child instead, so that check always failed and NO keystroke ever reached ANY
+            // RDP session (confirmed live: hwndFocus was the child, the hook wants the parent). Focusing the
+            // parent fixes that — but wfreerdp's low-level hook is a single SYSTEMWIDE chain; if every RDP tab in
+            // one host shared _embedHost as hWndParent, focusing it to satisfy one tab's check would ALSO satisfy
+            // every sibling tab's own hook (same target value, same chain), and whichever process's hook happens
+            // to run first would swallow the keystroke — possibly the wrong, backgrounded tab's session, not the
+            // one actually on screen. A distinct panel per session makes the check unambiguous: exactly one
+            // wfreerdp process can ever have ITS hWndParent focused at a time.
+            var rdpParent = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black, TabStop = false };
+            _embedHost.Controls.Add(rdpParent);
+            var forceRdpParent = rdpParent.Handle;   // realize BEFORE launch — /parent-window needs a live HWND
+
+            var res = RdpLauncher.Launch(cp, native.Width, native.Height, true, rdpParent.Handle);
             if (!res.Ok)
             {
+                _embedHost.Controls.Remove(rdpParent);
+                rdpParent.Dispose();
                 MessageBox.Show(this, res.Error ?? "Failed to launch wfreerdp.", "Finestra", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
             var sess = RdpLauncher.ResolveEmitSize(cp.Settings, native.Width, native.Height);
             FileLog.Line("[HOST] addsession mode=" + Mode + " pid=" + (res.Process != null ? res.Process.Id.ToString() : "?")
                 + " session=" + sess.Width + "x" + sess.Height + " embed=" + _embedHost.ClientSize + " args=" + res.ArgsForDisplay);
-            _sessions.Add(new Session { Profile = cp, Proc = res.Process, Emitted = sess, Owner = this });
+            _sessions.Add(new Session { Profile = cp, Proc = res.Process, Emitted = sess, Owner = this, RdpParent = rdpParent });
             RefreshTabs();
             SetActive(_sessions.Count - 1);
         }
@@ -700,7 +727,7 @@ namespace Finestra.UI
 
             if (s.Child == IntPtr.Zero && s.Proc != null && !s.Proc.HasExited)
             {
-                IntPtr child = FindChildByPid(_embedHost.Handle, s.Proc.Id);
+                IntPtr child = FindChildByPid(s.RdpParent.Handle, s.Proc.Id);
                 if (child != IntPtr.Zero)
                 {
                     s.Child = child;
@@ -708,8 +735,12 @@ namespace Finestra.UI
                     FileLog.Line("[HOST] child EMBEDDED hwnd=0x" + child.ToInt64().ToString("X") + " pid=" + s.Proc.Id + " mode=" + Mode);
                     StartStats(s);
                     FitChild(child);
-                    ShowWindow(child, IndexOf(s) == _active ? SW_SHOW : SW_HIDE);
-                    if (IndexOf(s) == _active) FocusChild(child);
+                    bool nowActive = IndexOf(s) == _active;
+                    ShowWindow(child, nowActive ? SW_SHOW : SW_HIDE);
+                    s.RdpParent.Visible = nowActive;   // FRDP-RDP-KBD-FIX — an inactive session's panel is plain-painted
+                    // and fully overlaps every sibling (all Dock=Fill); left visible it opaquely covers the active
+                    // session's real child underneath, regardless of z-order (measured: device-reported black tab).
+                    if (nowActive) FocusChild(s.RdpParent.Handle);
                     KeepBarOnTop();
                     if (IndexOf(s) == _active) RefreshRdpPanOverlay();   // FIN-KBD-FREEZE-SCROLL — connecting while already frozen is a real (if narrow) case
                 }
@@ -883,7 +914,14 @@ namespace Finestra.UI
                 var s = _sessions[k];
                 if (s.IsSsh) s.Ssh.SetVisible(k == i);
                 else if (s.IsFtp) s.Ftp.SetVisible(k == i);
-                else if (s.Child != IntPtr.Zero) ShowWindow(s.Child, k == i ? SW_SHOW : SW_HIDE);
+                else
+                {
+                    // FRDP-RDP-KBD-FIX — set unconditionally, even before this session's child has embedded: a
+                    // still-connecting RDP tab's panel defaults to Visible=true and, left alone, would keep
+                    // covering an already-connected sibling the moment the user switches back to it.
+                    s.RdpParent.Visible = k == i;
+                    if (s.Child != IntPtr.Zero) ShowWindow(s.Child, k == i ? SW_SHOW : SW_HIDE);
+                }
             }
             var act = _sessions[i];
             if (act.IsSsh) act.Ssh.Focus();
@@ -892,7 +930,7 @@ namespace Finestra.UI
             // _embedHost.ClientSize: switching TO an RDP tab while frozen+clipped would silently un-freeze that
             // tab's size the moment it became active. RefreshRdpPanOverlay (below) re-applies this tab's own pan
             // instead, which repositions (never resizes) the child — the freeze contract holds across tab switches.
-            else if (act.Child != IntPtr.Zero) { if (!_sizeFrozen) FitChild(act.Child); FocusChild(act.Child); }
+            else if (act.Child != IntPtr.Zero) { if (!_sizeFrozen) FitChild(act.Child); FocusChild(act.RdpParent.Handle); }
             Ui.SetActive(i);
             Ui.SetStats(act.IsSsh ? act.Ssh.StatusText : act.IsFtp ? act.Ftp.StatusText : RdpBarText(act));   // RDP: connecting… / stats / failed
             Ui.SetPaused(act.Paused);
@@ -926,6 +964,7 @@ namespace Finestra.UI
                 try { s.Stats?.Dispose(); } catch { }
                 try { if (s.Proc != null && !s.Proc.HasExited) s.Proc.Kill(); } catch { }
                 try { s.Proc?.Dispose(); } catch { }   // FRDP-FIXSWEEP B17 — release the Process handle/plumbing
+                try { s.RdpParent?.Dispose(); } catch { }   // FRDP-RDP-KBD-FIX — this session's dedicated /parent-window panel
             }
             _sessions.RemoveAt(i);
             if (_sessions.Count == 0) { Close(); return; }
@@ -937,11 +976,12 @@ namespace Finestra.UI
 
         // ── tear-off: move a LIVE embedded session into its own window (FRDP-TEAROFF) ──────────────────────────
         //
-        // THE PRIMITIVE this feature rests on: a live wfreerdp child is a WS_CHILD render surface parented to a
-        // host's embed panel. The RDP/TCP session, the autodetect stats pipe (a named pipe keyed to the wfreerdp
-        // PID), and the decode/render loop ALL live in the wfreerdp *process* — none of them know or care which
-        // window is their parent. So SetParent(child, otherPanel) moves the picture to another window WITHOUT a
-        // reconnect: no re-auth, no new PID, the pipe never drops. The session object (Proc/Child/Stats/Paused)
+        // THE PRIMITIVE this feature rests on: a live wfreerdp child is a WS_CHILD render surface parented to its
+        // session's own RdpParent panel (FRDP-RDP-KBD-FIX). The RDP/TCP session, the autodetect stats pipe (a
+        // named pipe keyed to the wfreerdp PID), and the decode/render loop ALL live in the wfreerdp *process* —
+        // none of them know or care which window is their parent. So moving RdpParent to another host's embed
+        // panel (a managed Controls.Add — the child comes along as part of that same native subtree) relocates
+        // the picture WITHOUT a reconnect: no re-auth, no new PID, the pipe never drops. The session object (Proc/Child/Stats/Paused)
         // is handed over as-is; only its Owner (stats routing) and its fit bookkeeping are re-pointed.
 
         private void OnTabTear(int i)
@@ -1036,9 +1076,17 @@ namespace Finestra.UI
             }
             else if (s.Child != IntPtr.Zero)
             {
-                IntPtr prev = SetParent(s.Child, dest._embedHost.Handle);   // ← the live re-parent
+                // FRDP-RDP-KBD-FIX — move s.RdpParent itself (a managed reparent, same mechanism SSH/FTP already
+                // use above), NOT a raw SetParent on the child. The child's actual native parent stays RdpParent
+                // the whole time — RdpParent is what moves to dest, so the child comes along as part of that same
+                // subtree without needing its own SetParent call. This keeps the child's /parent-window identity
+                // (RdpParent's HWND) intact across the tear — required for FreeRDP's keyboard-forwarding check,
+                // which compares against whatever HWND was passed at LAUNCH, not whatever the CURRENT parent is.
+                _embedHost.Controls.Remove(s.RdpParent);
+                dest._embedHost.Controls.Add(s.RdpParent);
+                s.RdpParent.Dock = DockStyle.Fill;
                 FileLog.Line("[TEAR] transplant '" + s.Name + "' pid=" + pid + " child=0x" + s.Child.ToInt64().ToString("X")
-                    + " oldParent=0x" + prev.ToInt64().ToString("X") + " newParent=0x" + dest._embedHost.Handle.ToInt64().ToString("X"));
+                    + " rdpParent=0x" + s.RdpParent.Handle.ToInt64().ToString("X") + " → host '" + dest.Text + "'");
             }
 
             dest.AdoptSession(s);
@@ -1062,7 +1110,7 @@ namespace Finestra.UI
             if (s.Child != IntPtr.Zero) { FitChild(s.Child); ShowWindow(s.Child, SW_SHOW); }
             RefreshTabs();
             SetActive(_sessions.Count - 1);
-            if (s.Child != IntPtr.Zero) FocusChild(s.Child);
+            if (s.Child != IntPtr.Zero) FocusChild(s.RdpParent.Handle);
             FileLog.Line("[TEAR] adopted '" + s.Name + "' into " + Mode + " host; tabs now=" + _sessions.Count);
         }
 
@@ -1120,7 +1168,7 @@ namespace Finestra.UI
             _hoverTimer.Start();
             ForceForeground();
             if (_active >= 0 && _active < _sessions.Count && _sessions[_active].Child != IntPtr.Zero)
-                FocusChild(_sessions[_active].Child);
+                FocusChild(_sessions[_active].RdpParent.Handle);
             FileLog.Line("[HOST] restored from taskbar (fullscreen), sessions=" + _sessions.Count);
         }
 
@@ -1272,7 +1320,7 @@ namespace Finestra.UI
             var a = _sessions[_active];
             if (a.IsSsh) a.Ssh.Focus();
             else if (a.IsFtp) a.Ftp.Focus();
-            else if (a.Child != IntPtr.Zero) FocusChild(a.Child);
+            else if (a.Child != IntPtr.Zero) FocusChild(a.RdpParent.Handle);
         }
 
         /// <summary>After a presentation flip the embed area changed size; a Dynamic session must renegotiate to it.
@@ -1443,6 +1491,7 @@ namespace Finestra.UI
                     try { s.Stats?.Dispose(); } catch { }
                     try { if (s.Proc != null && !s.Proc.HasExited) s.Proc.Kill(); } catch { }
                     try { s.Proc?.Dispose(); } catch { }   // FRDP-FIXSWEEP B17 — release the Process handle/plumbing
+                    try { s.RdpParent?.Dispose(); } catch { }   // FRDP-RDP-KBD-FIX — this session's dedicated /parent-window panel
                 }
             }
             try { _bar?.Close(); } catch { }
@@ -1478,6 +1527,12 @@ namespace Finestra.UI
             catch { }
         }
 
+        /// <summary>FRDP-RDP-KBD-FIX — despite the name (kept for call-site continuity), callers now pass the
+        /// session's OWN <see cref="Session.RdpParent"/> handle, not the RDP child itself. FreeRDP's embedded-mode
+        /// keyboard hook only forwards keys when the systemwide focus HWND equals the /parent-window value exactly
+        /// — focusing the child (the old behaviour) never satisfied that, so no RDP session ever received a single
+        /// keystroke. See AddSession's doc comment for why each session needs its OWN panel, not the shared
+        /// _embedHost, as that target.</summary>
         private void FocusChild(IntPtr child)
         {
             try
@@ -1654,7 +1709,6 @@ namespace Finestra.UI
         [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc cb, IntPtr lParam);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
         [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr hWnd);
-        [DllImport("user32.dll")] private static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
         [DllImport("user32.dll")] private static extern int GetWindowLong(IntPtr hWnd, int idx);
         [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr hWnd, int idx, int val);
         [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);

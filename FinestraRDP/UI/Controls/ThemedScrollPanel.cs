@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Finestra.Helpers;
 
@@ -14,7 +15,20 @@ namespace Finestra.UI.Controls
     ///
     /// Usage: add child controls to <see cref="Host"/>, then call <see cref="RelayoutContent"/> (or set
     /// <see cref="Host"/>.Height). The wheel works over any child (an app-wide message filter routes wheel to the
-    /// panel when the cursor is over it); the thumb is draggable and the track is click-to-page.
+    /// panel when the cursor is over it); the thumb is draggable and the track is click-to-page. Dragging directly
+    /// over the CONTENT (any row, not just the thumb) also pans — this is what makes it usable on a touchscreen,
+    /// where hitting an 8px-wide thumb with a finger isn't realistic. Windows promotes single-finger touch drags
+    /// into ordinary mouse messages automatically, so this needs no WM_TOUCH/WM_GESTURE handling of its own — a
+    /// small movement threshold distinguishes an intentional pan from a tap/click on a row's own control.
+    ///
+    /// FIN-DLG-SCROLL-2 — wheel/drag targeting is a real TOP-MOST hit-test (<see cref="CursorOverThisPanel"/>),
+    /// not just "is the cursor inside my rectangle". The message filter is app-wide and runs one instance per
+    /// panel in registration order, so a panel whose rectangle merely sits UNDER a stacked dialog (the connection
+    /// editor's body under its nested "Advanced settings" dialog; the main list under any dialog) would otherwise
+    /// steal the wheel/drag and scroll itself behind the dialog on top. The hit-test fixes that: only the panel
+    /// actually under the pointer (same form as the window under the cursor) responds. A content drag that starts
+    /// on a text field pans only when the drag is clearly VERTICAL — a mouse's horizontal drag-select is preserved,
+    /// while a finger/pen (always a near-vertical scroll here) pans the textbox-dense editor/settings forms too.
     /// </summary>
     public sealed class ThemedScrollPanel : Panel, IMessageFilter
     {
@@ -22,6 +36,7 @@ namespace Finestra.UI.Controls
         private const int ThumbW = 8;
         private const int MinThumb = 28;
         private const int WheelStep = 54;
+        private const int DragThreshold = 12;   // px of movement before a content press is treated as a pan, not a click
 
         private readonly Panel _view;       // the scrolled content surface; callers add to this
         private int _scroll;                // current offset [0.._max]
@@ -29,6 +44,14 @@ namespace Finestra.UI.Controls
         private bool _thumbHover, _thumbDrag;
         private int _dragGrabDy;
         private bool _filtering;
+
+        // content-area drag-to-pan (mouse OR touch, via the same message filter that routes wheel)
+        private bool _contentDragCandidate, _contentDragConfirmed, _contentDragOverTextBox;
+        private int _contentDragStartX, _contentDragStartY, _contentDragStartScroll;
+
+        [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(POINT p);
+        [DllImport("user32.dll")] private static extern bool ReleaseCapture();
+        [StructLayout(LayoutKind.Sequential)] private struct POINT { public int X, Y; }
 
         public Panel Host => _view;
 
@@ -194,19 +217,99 @@ namespace Finestra.UI.Controls
             if (_thumbHover) { _thumbHover = false; Invalidate(); }
         }
 
-        // wheel over ANY child: route to this panel when the cursor is within our bounds
+        // wheel over ANY child: route to this panel when the cursor is genuinely over IT (top-most hit-test,
+        // not just inside its rectangle — see CursorOverThisPanel). Also drives content-area drag-to-pan (mouse
+        // OR touch — Windows promotes single-finger touch into these same messages) for presses that start on a
+        // row but aren't over the thumb/track, which the panel's own OnMouseDown/Move/Up already own.
         public bool PreFilterMessage(ref Message m)
         {
             const int WM_MOUSEWHEEL = 0x020A;
-            if (m.Msg != WM_MOUSEWHEEL || _max <= 0 || !IsHandleCreated || !Visible) return false;
-            try
+            const int WM_LBUTTONDOWN = 0x0201;
+            const int WM_MOUSEMOVE = 0x0200;
+            const int WM_LBUTTONUP = 0x0202;
+            const int MK_LBUTTON = 0x0001;
+
+            if (!IsHandleCreated || !Visible) return false;
+
+            if (m.Msg == WM_MOUSEWHEEL)
             {
-                if (!RectangleToScreen(ClientRectangle).Contains(Cursor.Position)) return false;
-                int delta = (short)((long)m.WParam >> 16);
-                ScrollTo(_scroll - (delta / 120) * WheelStep);
-                return true;   // consumed
+                if (_max <= 0) return false;                      // nothing to scroll → let another panel try
+                try
+                {
+                    if (!CursorOverThisPanel()) return false;    // a panel merely UNDER a stacked dialog must not steal it
+                    int delta = (short)((long)m.WParam >> 16);
+                    ScrollTo(_scroll - (delta / 120) * WheelStep);
+                    return true;                                 // consumed
+                }
+                catch { return false; }
             }
-            catch { return false; }
+
+            if (m.Msg == WM_LBUTTONDOWN)
+            {
+                _contentDragCandidate = false;
+                _contentDragConfirmed = false;
+                if (_max <= 0 || m.HWnd == Handle) return false;   // panel's own thumb/track click: unrelated
+                try
+                {
+                    if (!CursorOverThisPanel()) return false;      // press belongs to whatever dialog is really on top
+                    // A press landing on a text field keeps click-drag text SELECTION for a MOUSE: such a press
+                    // only pans on a clearly-vertical drag (decided on move, below). Touch/pen never drag-select,
+                    // and their scroll is always near-vertical, so this still pans the textbox-dense forms by finger.
+                    _contentDragOverTextBox = Control.FromChildHandle(m.HWnd) is TextBoxBase;
+                    _contentDragCandidate = true;
+                    _contentDragStartX = Cursor.Position.X;
+                    _contentDragStartY = Cursor.Position.Y;
+                    _contentDragStartScroll = _scroll;
+                    return false;   // don't consume — a plain tap/click must still reach the row
+                }
+                catch { return false; }
+            }
+
+            if (m.Msg == WM_MOUSEMOVE)
+            {
+                if (!_contentDragCandidate) return false;
+                if (((long)m.WParam & MK_LBUTTON) == 0) { _contentDragCandidate = false; _contentDragConfirmed = false; return false; }
+                int dy = Cursor.Position.Y - _contentDragStartY;
+                if (!_contentDragConfirmed)
+                {
+                    if (Math.Abs(dy) < DragThreshold) return false;
+                    // Over a text field, require a clearly VERTICAL drag so a mouse's horizontal drag-select is left
+                    // to the box; a finger/pen scroll is near-vertical and passes this, so touch pans it anyway.
+                    if (_contentDragOverTextBox && Math.Abs(dy) <= Math.Abs(Cursor.Position.X - _contentDragStartX)) return false;
+                    _contentDragConfirmed = true;   // crossed the slop threshold: this is a pan, not a click
+                    ReleaseCapture();               // free a text box/button that grabbed the mouse on the press → smooth pan
+                }
+                ScrollTo(_contentDragStartScroll - dy);
+                return true;   // consumed — the row underneath shouldn't also react to this move
+            }
+
+            if (m.Msg == WM_LBUTTONUP)
+            {
+                bool wasConfirmed = _contentDragConfirmed;
+                _contentDragCandidate = false;
+                _contentDragConfirmed = false;
+                return wasConfirmed;   // swallow the "release" only if we actually panned, so a real tap still clicks
+            }
+
+            return false;
+        }
+
+        /// <summary>True only when the cursor is over THIS panel's own client area AND the TOP-MOST window under
+        /// the cursor belongs to the SAME form as this panel. The second half is the fix for stacked dialogs: the
+        /// app-wide filter runs one instance per panel in registration order, so a panel whose screen rectangle
+        /// merely sits UNDER a dialog on top (the connection editor's body under its nested "Advanced settings"
+        /// dialog; the main list under any dialog) would otherwise consume the wheel/drag and scroll itself behind
+        /// the dialog. WindowFromPoint gives the real top-most target, so only the panel actually under the pointer
+        /// responds.</summary>
+        private bool CursorOverThisPanel()
+        {
+            Point sp = Cursor.Position;
+            if (!RectangleToScreen(ClientRectangle).Contains(sp)) return false;
+            Form myForm = FindForm();
+            if (myForm == null) return true;   // not hosted on a form (shouldn't happen while filtering) — rect test above stands
+            POINT p; p.X = sp.X; p.Y = sp.Y;
+            Control top = Control.FromChildHandle(WindowFromPoint(p));
+            return top != null && top.FindForm() == myForm;
         }
     }
 }

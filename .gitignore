@@ -399,3 +399,22 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# ---------------------------------------------------------------------------
+# Finestra: internal working material that must NOT be published.
+# The per-batch engineering reports contain test-server addresses and account
+# names (18 files reference the RDP test VPS). They are development records,
+# not part of the product source.
+FIN-*.md
+Finestra-*.md
+FinestraRDP-*.md
+STATE.md
+FORK-PUBLICATION.md
+.claude/
+
+# Staged build output kept in the working tree (not build results of this repo)
+dist/
+installer/Output/
+
+# stray unreferenced image in the working tree
+c29dd57c-3bf1-4bf8-8aab-409301167b15.jpg

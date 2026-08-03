@@ -9,7 +9,7 @@ obligation for the engines.
 
 **Toolchain constraints (deliberate — do not "upgrade"):**
 - Visual Studio 2017 MSBuild (15.x) — no NuGet restore is used; all references are `HintPath`s
-  to DLLs staged in `FinestraRDP\lib\` (+ Newtonsoft.Json from the NuGet global cache).
+  to DLLs staged in `Finestra\lib\` (+ Newtonsoft.Json from the NuGet global cache).
 - **.NET Framework 4.7**, **C# 7.3**, **AnyCPU + Prefer32Bit**. This exact combination is what
   runs on jailbroken Windows RT 8.1 (ARM32): the one MSIL exe runs as 32-bit everywhere.
   Never retarget the csproj.
@@ -17,10 +17,10 @@ obligation for the engines.
   private-loaded at runtime — nothing needs installing.
 
 ```powershell
-& "<MSBuild15>\MSBuild.exe" FinestraRDP\Finestra.csproj /t:Rebuild /p:Configuration=Release /p:Platform=AnyCPU
+& "<MSBuild15>\MSBuild.exe" Finestra\Finestra.csproj /t:Rebuild /p:Configuration=Release /p:Platform=AnyCPU
 ```
 
-Output: `FinestraRDP\bin\Release\Finestra.exe` (+ `Finestra.exe.config` with the auto-generated
+Output: `Finestra\bin\Release\Finestra.exe` (+ `Finestra.exe.config` with the auto-generated
 binding redirects — ship it) + the managed DLL closure. Stage the engines under
 `bin\Release\engine\{x64,x86,arm}\wfreerdp.exe` and the app is runnable in place.
 
@@ -46,7 +46,7 @@ public repo they ship under `patches/`.)*
 -DWITH_CLIENT_SDL=OFF -DWITH_SERVER=OFF -DWITH_SAMPLE=OFF
 -DWITH_FFMPEG=OFF -DWITH_SWSCALE=OFF -DWITH_CAIRO=OFF -DWITH_SIMD=OFF
 -DWITH_JSON_DISABLED=ON -DWITH_KRB5=OFF -DWITH_NATIVE_SSPI=OFF
--DWITH_INTERNAL_RC4=ON -DWITH_INTERNAL_MD4=ON -DWITH_WINMM=OFF
+-DWITH_INTERNAL_RC4=ON -DWITH_INTERNAL_MD4=ON -DWITH_WINMM=ON
 -DWITH_WINPR_TOOLS=OFF -DWITH_WINDOWS_CERT_STORE=OFF -DWITH_PROGRESS_BAR=OFF
 -DWITH_MANPAGES=OFF -DBUILD_TESTING=OFF -DWITH_JPEG=OFF
 -DCHANNEL_URBDRC=OFF -DUSE_UNWIND=OFF -DWITH_VERBOSE_WINPR_ASSERT=OFF

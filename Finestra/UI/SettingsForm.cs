@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Windows.Forms;
 using Finestra.Core;
 using Finestra.UI.Controls;
@@ -70,16 +71,62 @@ namespace Finestra.UI
             var clipboard = Toggle("Clipboard", _s.Clipboard, v => _s.Clipboard = v);
             var drives = Toggle("Redirect drives", _s.Drives, v => _s.Drives = v);
             var printer = Toggle("Redirect default printer", _s.Printer, v => _s.Printer = v);
+            // FIN-AV-REDIR — microphone redirect is x64-ONLY (the project's first deliberately-x64-only
+            // feature). Only shown when the engine we'd launch is x64; hidden on x86/ARM/RT so a non-x64
+            // engine is never offered a flag it isn't intended to carry. (The audin/winmm capture backend
+            // is actually in every WITH_WINMM engine, so this gate is a product decision, not a hard limit —
+            // see FIN-AV-REDIR-RECON.md.) The emit is independently x64-guarded in RdpLauncher.BuildTokens.
+            bool x64 = RdpLauncher.DetectArch() == "x64";
+            ToggleRow microphone = x64 ? Toggle("Redirect microphone (x64)", _s.Microphone, v => _s.Microphone = v) : null;
+            // FIN-RDPECAM — camera redirect (webcam) is x64-ONLY too (the MF rdpecam backend ships only in
+            // the x64 engine path). Resolution is user-selectable because it's the main stutter lever —
+            // lower res = lighter realtime H.264 encode + upload. Hidden on non-x64; emit is x64-guarded.
+            ToggleRow camera = x64 ? Toggle("Redirect camera (x64)", _s.Camera, v => _s.Camera = v) : null;
+            ChoiceRow cameraRes = x64
+                ? Choice("Camera resolution", CameraResUi.Options, (int)_s.CameraResolution,
+                         i => _s.CameraResolution = (CameraResOpt)i)
+                : null;
+            // Frame rate (30/60/90/120/Custom). Above 30 needs the sensor to support it; the engine clamps
+            // to the highest rate the sensor actually offers.
+            ChoiceRow cameraFps = x64
+                ? Choice("Camera frame rate", CameraFpsUi.Options, (int)_s.CameraFps,
+                         i => _s.CameraFps = (CameraFpsOpt)i)
+                : null;
+            TextRow cameraFpsCustom = x64
+                ? Num("Custom fps (used when 'Custom…')", _s.CameraFpsCustom, v => _s.CameraFpsCustom = v)
+                : null;
+            // FIN-RDPECAM-HWENC — GPU hardware H.264 encoder vs software openh264. Auto/Hardware prefer the GPU
+            // (fail-closed to software); Software forces openh264. The GPU path moves encode off the CPU, which
+            // is what makes 1080p smooth on weak CPUs.
+            ChoiceRow cameraEncoder = x64
+                ? Choice("Camera encoder", CameraEncoderUi.Options, (int)_s.CameraEncoder,
+                         i => _s.CameraEncoder = (CameraEncoderOpt)i)
+                : null;
+            ChoiceRow cameraBitrate = x64
+                ? Choice("Camera bitrate", CameraBitrateUi.Options, (int)_s.CameraBitrate,
+                         i => _s.CameraBitrate = (CameraBitrateOpt)i)
+                : null;
 
             // ── Security ──
             var security = Choice("Security", SecurityOptions, (int)_s.Security, i => _s.Security = (SecurityOpt)i);
 
-            PopulateBody(
+            var rows = new List<Control>
+            {
                 new SectionHeader("Display"), fullscreen, depth, multimon, span,
                 new SectionHeader("Experience"), wallpaper, themes, fonts, menuAnims, winDrag, aero, compression, compLevel, network, gfx,
                 new SectionHeader("Connection"), timeout, reconnect, trustCert, gateway,
-                new SectionHeader("Local resources"), audio, clipboard, drives, printer,
-                new SectionHeader("Security"), security);
+                new SectionHeader("Local resources"), audio,
+            };
+            if (microphone != null) rows.Add(microphone);          // x64-only; grouped right after Audio
+            if (camera != null) rows.Add(camera);                  // x64-only camera redirect
+            if (cameraRes != null) rows.Add(cameraRes);            // its resolution cap (the stutter lever)
+            if (cameraFps != null) rows.Add(cameraFps);            // frame rate (sensor-clamped)
+            if (cameraFpsCustom != null) rows.Add(cameraFpsCustom);// custom fps value
+            if (cameraEncoder != null) rows.Add(cameraEncoder);    // GPU-hardware vs openh264
+            if (cameraBitrate != null) rows.Add(cameraBitrate);    // target bitrate (quality vs uplink)
+            rows.Add(clipboard); rows.Add(drives); rows.Add(printer);
+            rows.Add(new SectionHeader("Security")); rows.Add(security);
+            PopulateBody(rows.ToArray());
         }
 
         // ── row factories ──

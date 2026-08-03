@@ -25,6 +25,108 @@ namespace Finestra.Core
     /// <summary>/gfx:… — RDP8 graphics pipeline codec. Default emits nothing (auto-negotiate).</summary>
     public enum GfxOpt { Default, Avc444, Avc420, Rfx, Progressive }
 
+    /// <summary>FIN-RDPECAM — camera capture resolution offered to the server (x64-only rdpecam/MF backend).
+    /// LOWER resolution = smoother outgoing video: realtime H.264 encode of 1080p plus the RDP upload
+    /// stutters, so the default is 720p. Enum order == the ChoiceRow index (HD720 first = default).</summary>
+    public enum CameraResOpt { HD720, FHD1080, VGA480 }
+
+    /// <summary>UI labels + pixel dimensions for <see cref="CameraResOpt"/> (parallels OversizeModeUi).</summary>
+    public static class CameraResUi
+    {
+        public static readonly string[] Options = { "720p (1280×720)", "1080p (1920×1080)", "480p (640×480)" };
+
+        public static void Dimensions(CameraResOpt r, out int width, out int height)
+        {
+            switch (r)
+            {
+                case CameraResOpt.FHD1080: width = 1920; height = 1080; break;
+                case CameraResOpt.VGA480:  width = 640;  height = 480;  break;
+                default:                   width = 1280; height = 720;  break; // HD720 (default)
+            }
+        }
+    }
+
+    /// <summary>FIN-RDPECAM — camera capture FRAME-RATE cap (x64-only rdpecam/MF backend). A cheaper stutter
+    /// lever than resolution when you want to keep 720p sharpness: halving fps halves the realtime H.264
+    /// encode + upload load. Default = no cap (let the server pick, usually 30). Enum order == ChoiceRow
+    /// index (Default first). The backend filters its offered media types to ≤ this fps; if the camera has
+    /// no matching lower-fps type it falls back gracefully (the smallest-size type is always kept).</summary>
+    /// <summary>FIN-RDPECAM-HWENC — camera capture FRAME-RATE (x64 rdpecam/MF). HONEST CLAMP: rates above 30
+    /// require the SENSOR to actually capture at that rate — most laptop cameras top out at 30 (often only at
+    /// lower resolutions). The backend caps its offered media types to ≤ this value and the server negotiates
+    /// the highest the sensor really provides, so asking 120 on a 30-fps sensor simply yields 30.</summary>
+    public enum CameraFpsOpt { Fps30, Fps60, Fps90, Fps120, Custom }
+
+    /// <summary>UI labels + numeric fps for <see cref="CameraFpsOpt"/> (parallels CameraResUi).</summary>
+    public static class CameraFpsUi
+    {
+        public static readonly string[] Options =
+            { "30 fps", "60 fps (sensor permitting)", "90 fps (sensor permitting)", "120 fps (sensor permitting)", "Custom…" };
+
+        /// <summary>Numeric fps for the /camera arg. Custom uses <paramref name="custom"/> (accepted 1..240;
+        /// out-of-range falls back to 30).</summary>
+        public static int Value(CameraFpsOpt f, int custom)
+        {
+            switch (f)
+            {
+                case CameraFpsOpt.Fps60:  return 60;
+                case CameraFpsOpt.Fps90:  return 90;
+                case CameraFpsOpt.Fps120: return 120;
+                case CameraFpsOpt.Custom: return (custom >= 1 && custom <= 240) ? custom : 30;
+                default:                  return 30; // Fps30
+            }
+        }
+    }
+
+    /// <summary>FIN-RDPECAM-HWENC — which H.264 encoder the x64 engine uses for the camera. Auto/HardwareMF
+    /// both PREFER the GPU hardware encoder and fall back to software if it can't init (a call never fails for
+    /// lack of HW); Software forces openh264. Emitted as the FREERDP_H264_ENCODER env var, x64-gated.</summary>
+    public enum CameraEncoderOpt { Auto, HardwareMF, Software }
+
+    /// <summary>UI labels + env value for <see cref="CameraEncoderOpt"/>. The engine treats "sw" as force-software
+    /// and anything else as prefer-hardware, so HardwareMF and Auto behave identically (honest: HW can't be forced
+    /// without risking a failed call — it always falls back).</summary>
+    public static class CameraEncoderUi
+    {
+        public static readonly string[] Options = { "Auto (prefer GPU)", "Hardware (GPU)", "Software (openh264)" };
+
+        public static string EnvValue(CameraEncoderOpt e)
+        {
+            switch (e)
+            {
+                case CameraEncoderOpt.Software:   return "sw";
+                case CameraEncoderOpt.HardwareMF: return "hw";
+                default:                          return "auto"; // Auto
+            }
+        }
+    }
+
+    /// <summary>FIN-RDPECAM-QUALITY — camera H.264 target bitrate (x64 rdpecam/MF). Auto scales with the
+    /// negotiated resolution (raised well above the stock webcam table — sharper, not blocky); the fixed tiers
+    /// let the user trade quality against uplink (higher = sharper but more upload). Passed as the
+    /// FREERDP_H264_BITRATE env var (kbps); Auto sends nothing so the engine uses its resolution-scaled default.</summary>
+    public enum CameraBitrateOpt { Auto, Low, Medium, High, Max }
+
+    /// <summary>UI labels + kbps for <see cref="CameraBitrateOpt"/> (parallels CameraEncoderUi). 0 == Auto.</summary>
+    public static class CameraBitrateUi
+    {
+        public static readonly string[] Options =
+            { "Auto (match resolution)", "Low (~1 Mbps)", "Medium (~2 Mbps)", "High (~4 Mbps)", "Max (~8 Mbps)" };
+
+        /// <summary>Target bitrate in kbps for the FREERDP_H264_BITRATE env var; 0 = Auto (engine scales by res).</summary>
+        public static int Kbps(CameraBitrateOpt b)
+        {
+            switch (b)
+            {
+                case CameraBitrateOpt.Low:    return 1000;
+                case CameraBitrateOpt.Medium: return 2000;
+                case CameraBitrateOpt.High:   return 4000;
+                case CameraBitrateOpt.Max:    return 8000;
+                default:                      return 0;   // Auto
+            }
+        }
+    }
+
     /// <summary>Resolution mode. Native = resolve the device's PHYSICAL resolution live at connect (a mode, not a
     /// stored number — the same profile resolves differently on RT vs desktop); Preset = a chosen aspect-ratio
     /// resolution; Custom = user-entered W/H. Portrait swaps W↔H at emit.</summary>
@@ -106,6 +208,18 @@ namespace Finestra.Core
         public bool Clipboard { get; set; } = true;              // -clipboard when false
         public bool Drives { get; set; } = false;                // +drives when true
         public bool Printer { get; set; } = false;               // /printer (default printer) when true
+        // FIN-AV-REDIR — redirect the LOCAL microphone to the server (audio-input via the audin+winmm
+        // capture channel). x64-ONLY by design: the flag is emitted only when the engine is x64 (see
+        // RdpLauncher.BuildTokens) and the toggle is only shown on x64 (SettingsForm). Off by default.
+        public bool Microphone { get; set; } = false;            // /microphone:sys:winmm when true (x64 only)
+        // FIN-RDPECAM — redirect the LOCAL camera to the server (x64-only MF rdpecam backend). Emits
+        // /camera with the chosen resolution cap; x64-gated in the UI and in RdpLauncher.BuildTokens.
+        public bool Camera { get; set; } = false;                // /camera:width:..,height:.. when true (x64 only)
+        public CameraResOpt CameraResolution { get; set; } = CameraResOpt.HD720;  // offered resolution cap (720p default)
+        public CameraFpsOpt CameraFps { get; set; } = CameraFpsOpt.Fps30;         // offered fps (30 default; sensor-clamped)
+        public int CameraFpsCustom { get; set; } = 30;                            // used when CameraFps == Custom
+        public CameraEncoderOpt CameraEncoder { get; set; } = CameraEncoderOpt.Auto; // GPU-hardware vs openh264 (x64)
+        public CameraBitrateOpt CameraBitrate { get; set; } = CameraBitrateOpt.Auto; // target bitrate/quality (x64); Auto scales w/ resolution
 
         // ── Security ──
         public SecurityOpt Security { get; set; } = SecurityOpt.Default;   // /sec:

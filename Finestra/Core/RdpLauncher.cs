@@ -124,6 +124,23 @@ namespace Finestra.Core
             if (!s.Clipboard) t.Add("-clipboard");
             if (s.Drives) t.Add("+drives");
             if (s.Printer) t.Add("/printer");
+            // FIN-AV-REDIR — microphone (audio-input) redirect, x64-ONLY. The audin+winmm capture backend
+            // is compiled into the engine (WITH_WINMM), but this is gated to the x64 engine BY DESIGN — the
+            // project's first deliberately-x64-only feature. Guard the EMIT (not just the UI): a saved profile
+            // with Microphone=true, opened on a non-x64 device, must never send /microphone to that engine.
+            if (s.Microphone && DetectArch() == "x64") t.Add("/microphone:sys:winmm");
+            // FIN-RDPECAM — camera (webcam) redirect, x64-ONLY (MF rdpecam backend). Emit the chosen
+            // resolution as a cap so the server negotiates a lighter format (the main stutter lever).
+            // x64-guarded like mic: a profile with Camera=true opened on a non-x64 device never emits it.
+            if (s.Camera && DetectArch() == "x64")
+            {
+                int cw, ch;
+                CameraResUi.Dimensions(s.CameraResolution, out cw, out ch);
+                string cam = "/camera:width:" + cw + ",height:" + ch;
+                int fps = CameraFpsUi.Value(s.CameraFps, s.CameraFpsCustom);
+                if (fps > 0) cam += ",fps:" + fps;   // sensor-clamped by the backend's offer filter
+                t.Add(cam);
+            }
 
             // ── security ──
             string sec = SecurityValue(s.Security);
@@ -177,6 +194,23 @@ namespace Finestra.Core
                     CreateNoWindow = false,
                     WorkingDirectory = Path.GetDirectoryName(exe) ?? Environment.CurrentDirectory
                 };
+                // FIN-RDPECAM-HWENC — camera H.264 encoder choice, passed to the engine as an env var (x64
+                // only, camera on). The engine's rdpecam h264 subsystem reads FREERDP_H264_ENCODER: "sw"
+                // forces openh264, anything else prefers the GPU hardware MFT (fail-closed back to openh264).
+                if (cp.Settings != null && cp.Settings.Camera && DetectArch() == "x64")
+                {
+                    string enc = CameraEncoderUi.EnvValue(cp.Settings.CameraEncoder);
+                    psi.EnvironmentVariables["FREERDP_H264_ENCODER"] = enc;
+                    FileLog.Line("[CAMERA] H264 encoder pref = " + enc + " (FREERDP_H264_ENCODER)");
+                    // FIN-RDPECAM-QUALITY — camera H.264 bitrate. Auto (0) is left unset so the engine uses its
+                    // resolution-scaled default; a fixed tier is passed as kbps (higher = sharper, more uplink).
+                    int camKbps = CameraBitrateUi.Kbps(cp.Settings.CameraBitrate);
+                    if (camKbps > 0)
+                    {
+                        psi.EnvironmentVariables["FREERDP_H264_BITRATE"] = camKbps.ToString();
+                        FileLog.Line("[CAMERA] H264 bitrate = " + camKbps + " kbps (FREERDP_H264_BITRATE)");
+                    }
+                }
                 var proc = new Process { StartInfo = psi };   // FRDP-FIXSWEEP B17 — dropped dead EnableRaisingEvents (no Exited handler; lifecycle is HasExited-polled in ChildTick)
                 proc.OutputDataReceived += (s, e) => { if (e.Data != null) FileLog.Line("[wfreerdp] " + e.Data); };
                 proc.ErrorDataReceived += (s, e) => { if (e.Data != null) FileLog.Line("[wfreerdp] " + e.Data); };

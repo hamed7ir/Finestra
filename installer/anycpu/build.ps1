@@ -1,6 +1,6 @@
 # =============================================================================
 #  Builds the AnyCPU .NET installer (Setup.exe + payload.zip) AND the portable ZIP
-#  from FinestraRDP\bin\Release. Pattern MIRRORED from CS-Ray installer/anycpu/build.ps1.
+#  from Finestra\bin\Release. Pattern MIRRORED from CS-Ray installer/anycpu/build.ps1.
 #
 #  WHY AnyCPU: an Inno Setup installer is native x86 and CANNOT run on Windows RT /
 #  ARM32 (its SetupLdr has no ARM emulation). This installer is compiled AnyCPU/MSIL -
@@ -14,8 +14,8 @@
 #    SHA256SUMS.txt
 # =============================================================================
 $ErrorActionPreference = 'Stop'
-$root   = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # repo root (...\FinestraRDP)
-$rel    = Join-Path $root 'FinestraRDP\bin\Release'
+$root   = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # repo root (...\Finestra)
+$rel    = Join-Path $root 'Finestra\bin\Release'
 $icon   = Join-Path $root 'Finestra.ico'
 $here   = $PSScriptRoot
 $outdir = Join-Path $root 'installer\Output\anycpu'
@@ -29,15 +29,34 @@ foreach ($f in 'LICENSE','THIRD-PARTY-NOTICES.txt','FREERDP-MODIFICATIONS.txt') 
     if (-not (Test-Path (Join-Path $root $f))) { throw "Legal file missing at repo root: $f" }
 }
 
-# Version tracks the BUILT assembly so the distributable names never go stale. (Keep Setup.cs's AppVersion
-# const in sync for the wizard's displayed version + the uninstall registry DisplayVersion.)
+# Version tracks the BUILT assembly so the distributable names never go stale.
 $ver = [System.Diagnostics.FileVersionInfo]::GetVersionInfo("$rel\Finestra.exe").FileVersion   # e.g. 1.0.0.0
 $ver = (($ver -split '\.')[0..2]) -join '.'                                                    # -> 1.0.0
 
+# GUARD: Setup.cs's AppVersion const is what the wizard displays and what lands in the uninstall
+# registry as DisplayVersion, and it does NOT track AssemblyInfo.cs. Historically it silently drifted
+# (the shipped 1.0.2 installer was built from a Setup.cs whose committed copy still said 1.0.0), so a
+# mismatch is now a hard build failure rather than something you notice after publishing.
+$setupCs  = Join-Path $PSScriptRoot 'Setup.cs'
+$declared = [regex]::Match((Get-Content $setupCs -Raw), 'AppVersion\s*=\s*"([0-9]+(?:\.[0-9]+)*)"').Groups[1].Value
+if (-not $declared) { throw "Could not read AppVersion from $setupCs" }
+if ($declared -ne $ver) {
+    throw "Version mismatch: Finestra.exe is $ver but Setup.cs declares AppVersion = '$declared'. " +
+          "Update AppVersion in $setupCs (and Properties\AssemblyInfo.cs) so they agree, then re-run."
+}
+Write-Host "[build] version $ver (Setup.cs AppVersion agrees)"
+
 # Locate a C# compiler (Roslyn preferred; framework csc is the fallback).
-$csc = 'D:\Program Files\Vscom\MSBuild\15.0\Bin\Roslyn\csc.exe'
-if (-not (Test-Path $csc)) { $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" }
-if (-not (Test-Path $csc)) { throw "No C# compiler found (looked for Roslyn + framework csc)." }
+# Override with $env:FINESTRA_CSC when neither default location applies.
+$csc = $env:FINESTRA_CSC
+if (-not $csc -or -not (Test-Path $csc)) {
+    $csc = @(
+        'D:\Program Files\Vscom\MSBuild\15.0\Bin\Roslyn\csc.exe',
+        'D:\Program Files\vs22buildtools\MSBuild\Current\Bin\Roslyn\csc.exe',
+        "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not $csc) { throw "No C# compiler found. Set FINESTRA_CSC to a csc.exe path." }
 
 # 1. Stage the payload FLAT. Finestra is pure-managed with NO App.config <probing privatePath> - every managed
 #    DLL sits BESIDE the exe. The native engines live under engine\<arch>\wfreerdp.exe, resolved by the app's

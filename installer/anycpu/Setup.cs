@@ -39,7 +39,7 @@ namespace FinestraSetup
     internal static class Program
     {
         internal const string AppName = "Finestra";
-        internal const string AppVersion = "1.0.0";
+        internal const string AppVersion = "1.0.2";
         internal const string Publisher = "Hamed Ghorbani";
         internal const string ExeName = "Finestra.exe";
         internal const string PayloadName = "payload.zip";

@@ -29,5 +29,33 @@ source repository, which is the GPL-3 source offer for this application):
      Patches: port/build-config.patch (current tree state),
               port/win81-winver.patch (the original WIN81 case)
 
+  4. Windows client: DPI-aware cursor scaling
+     File: client/Windows/wf_graphics.c
+     The RDP session's hardware cursor was built directly from the server's
+     raw protocol pixel size with no DPI adjustment, rendering it visibly
+     undersized on any display above 100% Windows scaling. Adds a DPI query
+     (GetDpiForWindow, resolved dynamically via GetProcAddress so it never
+     appears as a static import — required for the Windows RT 8.1 loader,
+     which lacks that Windows-10-only export; falls back to the universal
+     GetDeviceCaps(LOGPIXELSX) query where GetDpiForWindow is unavailable)
+     and rescales the built cursor icon to match via CopyImage.
+     Patch: port/wfclient-cursor-dpi-scale.patch
+
+  5. Windows client: windowed Windows-key passthrough (mstsc-style)
+     File: client/Windows/wf_event.c
+     The Windows client's low-level keyboard hook (wf_ll_kbd_proc) forwards
+     and swallows every non-lock key to the remote when the RDP panel has
+     focus, so a Windows-key combination (e.g. Win+V clipboard history,
+     Win+D/E/Tab) pressed over an embedded/windowed session went to the
+     REMOTE instead of the local OS. This adds an mstsc-faithful rule: while
+     NOT fullscreen, the Win key itself and any key pressed while a Win key
+     is held fall through to the local OS via CallNextHookEx, so the local
+     Win+V popup (and other Win-combos) appear over the session and the
+     already-enabled clipboard channel (cliprdr) syncs the picked item in.
+     Standalone fullscreen (+f) keeps the classic remote-forwarding. Win
+     state is read live via GetAsyncKeyState so a held Win key never sticks;
+     normal typing and the focus-routing behavior are untouched.
+     Patch: port/wfclient-winkey-passthrough.patch
+
 Source offer: https://github.com/hamed7ir/Finestra
 FreeRDP upstream: https://github.com/FreeRDP/FreeRDP  (Apache-2.0)

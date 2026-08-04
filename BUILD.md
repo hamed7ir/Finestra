@@ -1,9 +1,14 @@
 # Building Finestra
 
 Two parts: the **managed app** (C#, this repo) and the **native FreeRDP engines**
-(`engine\{x64,x86,arm}\wfreerdp.exe`, built from a modified FreeRDP 3.28.0 tree). You can rebuild
+(`engine\<arch>\wfreerdp.exe`, built from a modified FreeRDP 3.28.0 tree). You can rebuild
 either independently — this document is also the practical half of the GPL-3.0 corresponding-source
 obligation for the engines.
+
+**Bundled engines: `x64` and `arm` only.** The **x86** engine still builds from these instructions and
+the app still loads it from `engine\x86\wfreerdp.exe`, but it is no longer shipped in the release
+bundle — 32-bit x86 Windows is rare enough that it did not justify the size for every download. See
+`installer\anycpu\engine-x86-README.txt`, which ships in `engine\x86\` in its place.
 
 ## 1. The managed app
 
@@ -22,7 +27,8 @@ obligation for the engines.
 
 Output: `Finestra\bin\Release\Finestra.exe` (+ `Finestra.exe.config` with the auto-generated
 binding redirects — ship it) + the managed DLL closure. Stage the engines under
-`bin\Release\engine\{x64,x86,arm}\wfreerdp.exe` and the app is runnable in place.
+`bin\Release\engine\<arch>\wfreerdp.exe` (`x64` and `arm` are required by the packaging script; `x86`
+is optional) and the app is runnable in place.
 
 ## 2. The FreeRDP engines
 
@@ -58,6 +64,8 @@ provider dropped. `WITH_SIMD=OFF` — generic C, avoids NEON alignment faults on
 `WITH_VERBOSE_WINPR_ASSERT=OFF` — release engines (1.0 ships this way).
 
 ### x64 / x86 (MSVC + vcpkg static deps)
+
+*(x64 is shipped; x86 builds identically but is not bundled — see the note at the top.)*
 
 MSVC Build Tools (`vcvars64.bat` / `vcvars32.bat`) + a vcpkg with `openssl` and `zlib` installed
 for `x64-windows-static` / `x86-windows-static`. Configure with the common flags plus:

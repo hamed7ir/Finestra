@@ -5,7 +5,9 @@
 Finestra's flagship target is **Windows RT 8.1 on ARM32** (jailbroken Surface RT–class devices),
 where no modern remote-desktop client exists — and it runs equally on **Windows 10/11 ARM32,
 x86 and x64** from one universal AnyCPU build. The RDP engine is a ported, modified
-**FreeRDP 3.28.0** cross-compiled for all three architectures.
+**FreeRDP 3.28.0** cross-compiled for ARM32 and x64. *(32-bit x86 Windows: the engine is no longer
+bundled — `engine\x86\` ships with a short README explaining how to add one. Everything but RDP
+works without it.)*
 
 <p align="center">
 <img width="1012" height="689" alt="manager" src="https://github.com/user-attachments/assets/c9a65e30-c8c4-4cf0-a31d-81371c11dff6" />
@@ -42,8 +44,10 @@ Grab a release from [Releases](https://github.com/hamed7ir/Finestra/releases):
 | `Finestra-Setup-<ver>.zip` | Extract, run `Setup.exe` — per-user install (`%LocalAppData%\Programs\Finestra`), **no admin**, Start-menu shortcut, uninstall entry. The installer is AnyCPU/MSIL so it **runs on Windows RT** too. |
 | `Finestra-<ver>-portable.zip` | Extract anywhere, run `Finestra.exe`. Nothing registered — delete the folder to remove. |
 
-One bundle covers all architectures — the right `engine\{x64,x86,arm}\wfreerdp.exe` is picked
-automatically.
+One bundle covers all architectures — the right `engine\<arch>\wfreerdp.exe` is picked automatically
+(`x64` on 64-bit Windows, `arm` on Windows RT 8.1 and ARM32/ARM64). The **x86** engine is not bundled;
+on 32-bit Windows, drop a 32-bit `wfreerdp.exe` into `engine\x86\` — see the README in that folder, or
+lift the one from the [1.0.2 release](https://github.com/hamed7ir/Finestra/releases), which shipped it.
 
 **Requirements**
 - .NET Framework **4.7+** (in-box on Windows 10 1703+).

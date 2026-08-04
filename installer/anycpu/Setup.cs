@@ -5,7 +5,9 @@
 //  and Windows 10 ARM32 — unlike an Inno Setup installer, whose loader (SetupLdr) is
 //  native x86 and physically cannot launch on RT (no x86 emulation). Ships next to
 //  "payload.zip" (the app in its FLAT deploy layout: managed DLLs + .config +
-//  engine\{x64,x86,arm}\wfreerdp.exe beside the exe).
+//  engine\<arch>\wfreerdp.exe beside the exe - x64 and arm are bundled; engine\x86\
+//  ships with only a README, and a user-supplied engine there is preserved across
+//  upgrades by Installer.Install).
 //
 //  Pattern MIRRORED from CS-Ray's installer/anycpu/Setup.cs (the proven RT-capable
 //  ship vehicle, same author): per-user %LocalAppData%\Programs\<App>, IShellLink COM
@@ -96,6 +98,11 @@ namespace FinestraSetup
 
     internal static class Installer
     {
+        /// <summary>The one install-dir file that may be user-supplied: since FIN-X86-UNBUNDLE the bundle
+        /// ships engine\x86\ with only a README, so a 32-bit user adds their own engine here. Preserved
+        /// across the install-dir wipe. Must stay in sync with RdpLauncher.EngineCandidates.</summary>
+        private const string X86EngineRelPath = @"engine\x86\wfreerdp.exe";
+
         internal static void Install(string targetDir, bool desktopShortcut, Action<string> progress)
         {
             Report(progress, "Preparing...");
@@ -104,8 +111,30 @@ namespace FinestraSetup
                 throw new FileNotFoundException("Installer payload not found next to Setup.exe:\n" + payload
                     + "\n\nKeep Setup.exe and payload.zip together.");
 
+            // engine\x86\wfreerdp.exe is the ONE user-supplied file that can live in the install dir: since
+            // FIN-X86-UNBUNDLE the bundle ships only a README in that folder, and a user on 32-bit Windows
+            // is invited to drop their own 32-bit engine there. The wipe below would silently delete it on
+            // every upgrade. Carry it across, and restore it AFTER extraction only if the payload did not
+            // supply one (a bundled engine always wins).
+            // BEST-EFFORT BY DESIGN: every step is swallowed. Losing a re-droppable 6 MB file must never
+            // fail an install - and the shipped engine\x86\README.txt tells the user to keep their own copy
+            // outside the install folder, which is what covers the case where this preserve fails.
+            string preservedX86 = null;
+            try
+            {
+                string existingX86 = Path.Combine(targetDir, X86EngineRelPath);
+                if (File.Exists(existingX86))
+                {
+                    preservedX86 = Path.Combine(Path.GetTempPath(), "finestra_x86_" + Guid.NewGuid().ToString("N") + ".bin");
+                    File.Copy(existingX86, preservedX86, true);
+                    Report(progress, "Preserving your x86 engine...");
+                }
+            }
+            catch { preservedX86 = null; }   // could not copy it out - proceed with the install regardless
+
             // Fresh install of the BINARIES only. User data lives in Documents\Finestra and is never in the
             // install dir, so wiping the target dir is safe (and it's how a re-install upgrades in place).
+            // The single exception is the user-supplied x86 engine handled immediately above/below.
             if (Directory.Exists(targetDir)) { Report(progress, "Removing previous version..."); TryDeleteDir(targetDir); }
             Directory.CreateDirectory(targetDir);
 
@@ -123,6 +152,25 @@ namespace FinestraSetup
                     using (var os = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None))
                         es.CopyTo(os);
                 }
+            }
+
+            // Restore the user's x86 engine - ONLY if the payload did not ship one, so a bundled engine
+            // always wins over a carried-over copy. Swallowed end to end; the temp copy is always cleaned up.
+            if (preservedX86 != null)
+            {
+                try
+                {
+                    string dest = Path.Combine(targetDir, X86EngineRelPath);
+                    if (!File.Exists(dest))
+                    {
+                        string destDir = Path.GetDirectoryName(dest);
+                        if (!string.IsNullOrEmpty(destDir)) Directory.CreateDirectory(destDir);
+                        File.Copy(preservedX86, dest, false);
+                        Report(progress, "Restored your x86 engine.");
+                    }
+                }
+                catch { }
+                finally { try { File.Delete(preservedX86); } catch { } }
             }
 
             string exe = Path.Combine(targetDir, Program.ExeName);

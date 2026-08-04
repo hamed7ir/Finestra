@@ -1,5 +1,5 @@
-Finestra 1.0.0 — Remote Connection Manager
-===========================================
+Finestra — Remote Connection Manager
+===================================
 RDP · SSH · SFTP / FTP / FTPS — one themed, tabbed client.
 Runs on Windows RT 8.1 (ARM32, jailbroken), Windows 10/11 ARM32, x86 and x64.
 
@@ -16,8 +16,13 @@ Extract this folder anywhere and run Finestra.exe. Nothing is registered; delete
 folder to remove it. Your data (connections, host keys, certificates, settings) lives
 in Documents\Finestra — never beside the exe.
 
-The RDP engine (wfreerdp.exe, a modified FreeRDP 3.28.0 build) is picked automatically
-from engine\x64, engine\x86 or engine\arm to match your machine.
+The RDP engine (wfreerdp.exe, a modified FreeRDP 3.28.0 build) is picked automatically to
+match your machine: engine\x64 on 64-bit Windows, engine\arm on Windows RT 8.1 and on
+ARM32/ARM64 Windows.
+
+32-bit x86 Windows: the x86 engine is NOT bundled — engine\x86\ ships with a README that
+explains how to add one (you can copy it out of the Finestra 1.0.2 download, which did
+bundle it). Everything except RDP works without it; SSH, SFTP, FTP and FTPS are unaffected.
 
 License
 -------

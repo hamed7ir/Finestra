@@ -22,9 +22,32 @@ $outdir = Join-Path $root 'installer\Output\anycpu'
 
 if (-not (Test-Path "$rel\Finestra.exe")) { throw "Build Release first: '$rel\Finestra.exe' not found." }
 if (-not (Test-Path $icon))               { throw "App icon not found: '$icon'." }
-foreach ($a in 'x64','x86','arm') {
-    if (-not (Test-Path "$rel\engine\$a\wfreerdp.exe")) { throw "Engine missing: '$rel\engine\$a\wfreerdp.exe' - stage the RELEASE engines first." }
+# ENGINE SET (FIN-X86-UNBUNDLE) -------------------------------------------------------------------
+# x64 and arm are REQUIRED. x86 is OPTIONAL and is deliberately NOT bundled - engine\x86\ ships as a
+# folder carrying only a README that explains how to supply one. These loops assert an EXPECTED SET
+# instead of iterating whatever happens to be on disk: a loop over "what is present" silently passes
+# when something is missing, and this project has already shipped one guard that could not fire
+# (the FIN-RDP-WINV comment marker, stripped at compile time - see NOTES-carried M1).
+$EngineRequired = @('x64','arm')
+$EngineOptional = @('x86')
+$EngineKnown    = $EngineRequired + $EngineOptional
+
+foreach ($a in $EngineRequired) {
+    if (-not (Test-Path "$rel\engine\$a\wfreerdp.exe")) {
+        throw "Engine missing: '$rel\engine\$a\wfreerdp.exe' - stage the RELEASE engines first. ($a is REQUIRED; only x86 is optional.)"
+    }
 }
+# An engine folder nobody declared means the staging convention drifted - fail rather than ship it blind.
+if (Test-Path "$rel\engine") {
+    $unknownEng = @(Get-ChildItem "$rel\engine" -Directory | ForEach-Object Name | Where-Object { $EngineKnown -notcontains $_ })
+    if ($unknownEng.Count) {
+        throw "Unexpected engine folder(s) in '$rel\engine': $($unknownEng -join ', '). Known: $($EngineKnown -join ', ')."
+    }
+}
+# Only folders that actually hold a wfreerdp.exe are staged/scanned - a README-only x86 folder is not a binary.
+$EnginePresent = @($EngineKnown | Where-Object { Test-Path "$rel\engine\$_\wfreerdp.exe" })
+$EngineAbsent  = @($EngineKnown | Where-Object { $EnginePresent -notcontains $_ })
+Write-Host ("[build] engines: required {0} OK; binaries present {1}{2}" -f ($EngineRequired -join '/'), ($EnginePresent -join '/'), $(if ($EngineAbsent.Count) { "; absent (optional) " + ($EngineAbsent -join '/') } else { "" }))
 
 # ENGINE PROVENANCE GUARD -----------------------------------------------------------------------
 # The development engine tree carries spike code that must never reach a release: the windowed
@@ -35,7 +58,7 @@ foreach ($a in 'x64','x86','arm') {
 #   WinV   : the hook is the only caller of GetAsyncKeyState in this client (verified: 1 hit in a
 #            WinV build, 0 in the shipped 1.0.2 engines).
 #   camera : the Media Foundation backend pulls in mfplat / mfreadwrite imports.
-foreach ($a in 'x64','x86','arm') {
+foreach ($a in $EnginePresent) {
     $engPath = "$rel\engine\$a\wfreerdp.exe"
     $bytes   = [System.IO.File]::ReadAllBytes($engPath)
     $ascii   = [System.Text.Encoding]::ASCII.GetString($bytes)
@@ -49,7 +72,7 @@ foreach ($a in 'x64','x86','arm') {
         }
     }
 }
-Write-Host "[build] engine provenance guard: x64/x86/arm clean (no WinV hook, no camera spike)"
+Write-Host ("[build] engine provenance guard: {0} clean (no WinV hook, no camera spike)" -f ($EnginePresent -join '/'))
 
 foreach ($f in 'LICENSE','THIRD-PARTY-NOTICES.txt','FREERDP-MODIFICATIONS.txt') {
     if (-not (Test-Path (Join-Path $root $f))) { throw "Legal file missing at repo root: $f" }
@@ -91,7 +114,20 @@ $stage = Join-Path $env:TEMP ("finpay_" + [Guid]::NewGuid().ToString('N'))
 New-Item $stage -ItemType Directory -Force | Out-Null
 Copy-Item "$rel\Finestra.exe", "$rel\Finestra.exe.config" $stage
 Copy-Item "$rel\*.dll" $stage                          # the managed closure, flat beside the exe
-Copy-Item "$rel\engine" $stage -Recurse                # engine\{x64,x86,arm}\wfreerdp.exe
+Copy-Item "$rel\engine" $stage -Recurse                # engine\<arch>\wfreerdp.exe
+# x86 is UNBUNDLED (FIN-X86-UNBUNDLE). The FOLDER still ships - so the app's "expected
+# engine\x86\wfreerdp.exe beside the app" message names a real place, and a user on 32-bit Windows can
+# drop their own build in - but the BINARY does not. Excluding it here rather than deleting it from
+# bin\Release keeps the exclusion explicit and reviewable, and leaves the build output intact.
+$stageX86 = Join-Path $stage 'engine\x86'
+New-Item $stageX86 -ItemType Directory -Force | Out-Null
+if (Test-Path (Join-Path $stageX86 'wfreerdp.exe')) {
+    Remove-Item (Join-Path $stageX86 'wfreerdp.exe') -Force
+    Write-Host "[build] x86 engine binary EXCLUDED from the bundle (folder + README still ship)"
+}
+$x86Readme = Join-Path $here 'engine-x86-README.txt'
+if (-not (Test-Path $x86Readme)) { throw "Missing '$x86Readme' - engine\x86\ must ship with its README." }
+Copy-Item $x86Readme (Join-Path $stageX86 'README.txt')
 # GPL: the license + third-party notices + the FreeRDP modification notice SHIP IN THE BUNDLE.
 foreach ($f in 'LICENSE','THIRD-PARTY-NOTICES.txt','FREERDP-MODIFICATIONS.txt') {
     Copy-Item (Join-Path $root $f) $stage

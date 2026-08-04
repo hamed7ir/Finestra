@@ -335,14 +335,20 @@ namespace Finestra.Core
             return null;
         }
 
-        /// <summary>engine\&lt;sub&gt;\wfreerdp.exe is the deploy bundle layout; the ..\Freerdp\ entries are dev-tree
-        /// fallbacks so a DEBUG run from bin\Debug\ finds the repo build outputs.</summary>
+        /// <summary>engine\&lt;sub&gt;\wfreerdp.exe is the deploy bundle layout and is what a shipped bundle always
+        /// hits; the ..\freerdp-engine\ entries are dev-tree fallbacks so a DEBUG run from bin\Debug\ finds the
+        /// engine build outputs without staging them. From bin\Debug\, ..\..\..\.. is the repo parent (D:\repo),
+        /// so these resolve to D:\repo\freerdp-engine\build-*. They previously said ..\Freerdp\build-* — the
+        /// pre-move C: sibling name — which resolves to nothing since the move, making every fallback dead.
+        /// Bundle behaviour is unaffected either way: engine\&lt;sub&gt;\ is tried first and wins.
+        /// NOTE x86 is deliberately NOT bundled (see installer\anycpu\engine-x86-README.txt); the selector arm
+        /// and this fallback stay so a user-supplied engine\x86\wfreerdp.exe still works.</summary>
         private static IEnumerable<string> EngineCandidates(string sub)
         {
             yield return @"engine\" + sub + @"\wfreerdp.exe";
-            if (sub == "x64") yield return @"..\..\..\..\Freerdp\build-x64\client\Windows\cli\wfreerdp.exe";
-            if (sub == "x86") yield return @"..\..\..\..\Freerdp\build-x86\client\Windows\cli\wfreerdp.exe";
-            if (sub == "arm") yield return @"..\..\..\..\Freerdp\deploy\wfreerdp.exe";
+            if (sub == "x64") yield return @"..\..\..\..\freerdp-engine\build-x64\client\Windows\cli\wfreerdp.exe";
+            if (sub == "x86") yield return @"..\..\..\..\freerdp-engine\build-x86\client\Windows\cli\wfreerdp.exe";
+            if (sub == "arm") yield return @"..\..\..\..\freerdp-engine\build-rt\client\Windows\cli\wfreerdp.exe";
         }
 
         /// <summary>Reads the PE machine type (COFF header) of a binary; 0 on any failure.</summary>

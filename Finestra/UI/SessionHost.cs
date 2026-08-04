@@ -103,23 +103,24 @@ namespace Finestra.UI
         /// primary signal; this is the belt-and-suspenders for a hung connect.</summary>
         private const int NoEmbedTimeoutTicks = 200;
 
-        private sealed class Session
+        /// <summary>FIN-RDP-RECONNECT-2 C1 — everything that belongs to ONE wfreerdp connection attempt, as
+        /// opposed to the tab that hosts it. Extracted so a reconnect is a single assignment
+        /// (<c>s.Conn = new RdpConnection { … }</c>) and a new connection is in its initial state BY
+        /// CONSTRUCTION — rather than fifteen fields reset by hand, which is exactly the failure mode that left
+        /// a dead <c>Child</c> HWND cached and blocked re-embedding (FIN-RDP-RECONNECT-1).
+        ///
+        /// WHERE THE POST-MORTEM LIVES: <see cref="ExitCode"/> and <see cref="DisconnectReason"/> are ON the
+        /// connection, not on the Session, because they describe THAT connection — a tab that reconnects twice
+        /// must not smear the first failure over the second. They outlive the connection because
+        /// <see cref="Session.Conn"/> keeps pointing at the ended connection until a new one replaces it, and
+        /// <see cref="Session.Last"/> keeps pointing at it afterwards.</summary>
+        private sealed class RdpConnection
         {
-            public ConnectionProfile Profile;
             public Process Proc;
             public IntPtr Child;
-            /// <summary>FRDP-RDP-KBD-FIX — this session's OWN dedicated /parent-window target (Dock=Fill inside
-            /// the owning host's _embedHost, so it's always the same size — see FitChild). RDP-only; null for
-            /// SSH/FTP, which embed straight into the shared _embedHost. Never shared across sessions — see the
-            /// doc comment on AddSession for why a shared parent would be a real (not theoretical) bug.</summary>
-            public Panel RdpParent;
             public StatsPipe Stats;
             public bool Paused;
             public string LastStats = "—";
-            /// <summary>The host that currently owns this session. Re-pointed on a tear-off transplant so the
-            /// StatsPipe's Updated event (a single, un-recreatable subscription — the pipe is one-shot per PID)
-            /// routes to whichever host is showing the session NOW, not the one it was born in.</summary>
-            public SessionHost Owner;
             /// <summary>The exact /w × /h wfreerdp was launched with — compared against the embed area to decide
             /// whether an OversizeMode.Dynamic session needs a one-shot renegotiation once it embeds.</summary>
             public Size Emitted;
@@ -128,51 +129,84 @@ namespace Finestra.UI
             /// <summary>Remaining Dynamic renegotiation posts, armed once the child is correctly sized.</summary>
             public int DynFitTicks;
             public bool DynFitArmed;
-
             /// <summary>FIN-KBD-FREEZE-SCROLL — RDP-only: the child's pan, in <see cref="ClipScrollbar"/>'s own
             /// "0 = bottom-anchored, maxPan = top-anchored" convention. Meaningful only once
-            /// <see cref="PanEstablished"/> is true. Persists per-session across tab switches; unused for SSH/FTP.</summary>
+            /// <see cref="PanEstablished"/> is true. Connection-scoped (decided FIN-RDP-RECONNECT-2): a relaunched
+            /// engine draws a brand-new child, so a pan measured against the old one means nothing.</summary>
             public int PanOffsetY;
-            /// <summary>False until this freeze session's UNTOUCHED baseline is set (top-anchored — exactly where
-            /// FitChild already left the child, so becoming clipped never moves it on its own) or the user drags —
-            /// whichever comes first. Without this, "reset PanOffsetY to a fixed number" can't tell "untouched" from
-            /// "a real pan" apart, because the meaning of any fixed number depends on maxPan, which isn't known
-            /// until the embed area has actually shrunk (freezing and shrinking are two different moments).</summary>
             public bool PanEstablished;
-
-            /// <summary>FRDP-POLISH-2 — inferred RDP phase for the bar. Connecting → Connected (first stats line);
-            /// Failed (died before ever embedding / timed out); Disconnected (died after embedding).</summary>
+            /// <summary>FRDP-POLISH-2 — inferred RDP phase for the bar.</summary>
             public RdpPhase Phase = RdpPhase.Connecting;
             public bool EverEmbedded;
             public int ConnectTicks;
-
-            /// <summary>FIN-RDP-RECONNECT-1 T3 — wfreerdp's exit code, captured ONLY when the engine exited on its
-            /// own (the process-exited teardown path). null when we killed it ourselves, because then the code is
-            /// ours, not the engine's, and would be actively misleading.
-            /// ⚠ THE CODE-TO-MEANING MAPPING IS UNVERIFIED. Nothing in this app has yet observed which value
-            /// FreeRDP returns for a clean logoff vs a server-side disconnect vs a network drop — that needs three
-            /// real sessions against a real server. It is captured and logged so those runs can be read off a log
-            /// later. NOTHING IS GATED ON IT, and nothing may be gated on it until the mapping is measured.</summary>
+            /// <summary>FIN-RDP-RECONNECT-1 T3 — wfreerdp's exit code, captured ONLY when the engine exited on
+            /// its own. null when we killed it, because then the code is ours and would be misleading.
+            /// ⚠ THE CODE-TO-MEANING MAPPING IS UNVERIFIED — nothing is gated on it. See DisconnectRdpSession.</summary>
             public int? ExitCode;
-            /// <summary>FIN-RDP-RECONNECT-1 T3 — which teardown path ran ("engine exited" / "heartbeat dead"), so
-            /// the bar and the log can tell them apart. Display only.</summary>
+            /// <summary>FIN-RDP-RECONNECT-1 T3 — which teardown path ended this connection. Display only.</summary>
             public string DisconnectReason;
 
-            /// <summary>FRDP-RDP-LIVENESS Part 1 — DateTime.UtcNow.Ticks of the last STATS heartbeat (set the
-            /// moment the pipe is started, so total silence from the start counts too, not just going-quiet-later).
-            /// A raw long behind Interlocked, not a DateTime field: this is written from the StatsPipe reader
-            /// thread and read from the UI-thread tick — a torn 8-byte read/write is a real risk on ARM32/RT.
-            /// 0 = not yet started.</summary>
+            /// <summary>FRDP-RDP-LIVENESS Part 1 — DateTime.UtcNow.Ticks of the last STATS heartbeat. A raw long
+            /// behind Interlocked, not a DateTime field: written from the StatsPipe reader thread and read from
+            /// the UI-thread tick — a torn 8-byte read/write is a real risk on ARM32/RT. 0 = not yet started.</summary>
             private long _lastStatsTicksRaw;
             public void TouchStats() { System.Threading.Interlocked.Exchange(ref _lastStatsTicksRaw, DateTime.UtcNow.Ticks); }
             /// <summary>Seconds since the last heartbeat, or -1 if none has ever been recorded (never started —
-            /// treated as "don't judge yet", not as infinitely stale, so a start-up race can't false-positive).</summary>
+            /// "don't judge yet", not "infinitely stale", so a start-up race can't false-positive).</summary>
             public double SecondsSinceLastStats()
             {
                 long t = System.Threading.Interlocked.Read(ref _lastStatsTicksRaw);
                 if (t == 0) return -1;
                 return Math.Max(0, (DateTime.UtcNow - new DateTime(t, DateTimeKind.Utc)).TotalSeconds);
             }
+        }
+
+        private sealed class Session
+        {
+            public ConnectionProfile Profile;
+
+            /// <summary>The connection this tab currently has — live, or the one that most recently ended (its
+            /// fields are then already torn down: Proc/Stats null, Child zero, Phase Disconnected). null only
+            /// before the first launch, and for SSH/FTP tabs, which have no engine.
+            /// A reconnect assigns a NEW RdpConnection here; that is the whole point of the split.</summary>
+            public RdpConnection Conn;
+            /// <summary>The most recently ENDED connection. Equal to <see cref="Conn"/> immediately after a
+            /// disconnect, and diverges once a reconnect replaces Conn — so the previous attempt's post-mortem
+            /// stays readable across a reconnect.</summary>
+            public RdpConnection Last;
+
+            // ── forwarders ────────────────────────────────────────────────────────────────────────────────────
+            // The connection's fields are reached through the Session under their original names. This keeps the
+            // 127 existing call sites byte-identical, which is what makes this extraction provably behaviour-
+            // preserving rather than merely intended to be. Writes are no-ops when there is no connection —
+            // matching the old behaviour, where writing to a torn-down session's fields was equally meaningless.
+            public Process Proc { get { return Conn?.Proc; } set { if (Conn != null) Conn.Proc = value; } }
+            public IntPtr Child { get { return Conn != null ? Conn.Child : IntPtr.Zero; } set { if (Conn != null) Conn.Child = value; } }
+            /// <summary>FRDP-RDP-KBD-FIX — this session's OWN dedicated /parent-window target (Dock=Fill inside
+            /// the owning host's _embedHost, so it's always the same size — see FitChild). RDP-only; null for
+            /// SSH/FTP, which embed straight into the shared _embedHost. Never shared across sessions — see the
+            /// doc comment on AddSession for why a shared parent would be a real (not theoretical) bug.</summary>
+            public Panel RdpParent;
+            public StatsPipe Stats { get { return Conn?.Stats; } set { if (Conn != null) Conn.Stats = value; } }
+            public bool Paused { get { return Conn != null && Conn.Paused; } set { if (Conn != null) Conn.Paused = value; } }
+            public string LastStats { get { return Conn != null ? Conn.LastStats : "—"; } set { if (Conn != null) Conn.LastStats = value; } }
+            /// <summary>The host that currently owns this session. Re-pointed on a tear-off transplant so the
+            /// StatsPipe's Updated event (a single, un-recreatable subscription — the pipe is one-shot per PID)
+            /// routes to whichever host is showing the session NOW, not the one it was born in.</summary>
+            public SessionHost Owner;
+            public Size Emitted { get { return Conn != null ? Conn.Emitted : Size.Empty; } set { if (Conn != null) Conn.Emitted = value; } }
+            public int FitStableTicks { get { return Conn != null ? Conn.FitStableTicks : 0; } set { if (Conn != null) Conn.FitStableTicks = value; } }
+            public int DynFitTicks { get { return Conn != null ? Conn.DynFitTicks : 0; } set { if (Conn != null) Conn.DynFitTicks = value; } }
+            public bool DynFitArmed { get { return Conn != null && Conn.DynFitArmed; } set { if (Conn != null) Conn.DynFitArmed = value; } }
+            public int PanOffsetY { get { return Conn != null ? Conn.PanOffsetY : 0; } set { if (Conn != null) Conn.PanOffsetY = value; } }
+            public bool PanEstablished { get { return Conn != null && Conn.PanEstablished; } set { if (Conn != null) Conn.PanEstablished = value; } }
+            public RdpPhase Phase { get { return Conn != null ? Conn.Phase : RdpPhase.Connecting; } set { if (Conn != null) Conn.Phase = value; } }
+            public bool EverEmbedded { get { return Conn != null && Conn.EverEmbedded; } set { if (Conn != null) Conn.EverEmbedded = value; } }
+            public int ConnectTicks { get { return Conn != null ? Conn.ConnectTicks : 0; } set { if (Conn != null) Conn.ConnectTicks = value; } }
+            public int? ExitCode { get { return Conn?.ExitCode; } }
+            public string DisconnectReason { get { return Conn?.DisconnectReason; } }
+            public void TouchStats() { Conn?.TouchStats(); }
+            public double SecondsSinceLastStats() { return Conn != null ? Conn.SecondsSinceLastStats() : -1; }
 
             /// <summary>FRDP-SSH-BUILD-2 — set for an SSH tab; null for an RDP tab. When set, this session is an
             /// app-owned terminal (no child HWND, no proc, no stats pipe) and the RDP machinery below is bypassed.
@@ -616,7 +650,10 @@ namespace Finestra.UI
             var sess = RdpLauncher.ResolveEmitSize(cp.Settings, native.Width, native.Height);
             FileLog.Line("[HOST] addsession mode=" + Mode + " pid=" + (res.Process != null ? res.Process.Id.ToString() : "?")
                 + " session=" + sess.Width + "x" + sess.Height + " embed=" + _embedHost.ClientSize + " args=" + res.ArgsForDisplay);
-            _sessions.Add(new Session { Profile = cp, Proc = res.Process, Emitted = sess, Owner = this, RdpParent = rdpParent });
+            // FIN-RDP-RECONNECT-2 C1 — the connection is constructed as one object. A reconnect is the same
+            // single assignment against an existing Session, which is why the split exists.
+            _sessions.Add(new Session { Profile = cp, Owner = this, RdpParent = rdpParent,
+                                        Conn = new RdpConnection { Proc = res.Process, Emitted = sess } });
             RefreshTabs();
             SetActive(_sessions.Count - 1);
         }
@@ -961,8 +998,7 @@ namespace Finestra.UI
             s.Proc = null;
 
             s.Child = IntPtr.Zero;
-            s.ExitCode = code;
-            s.DisconnectReason = reason;
+            if (s.Conn != null) { s.Conn.ExitCode = code; s.Conn.DisconnectReason = reason; }
 
             // ⚠ UNVERIFIED MAPPING — this log line is the raw material for working out what FreeRDP's exit codes
             // actually mean (clean logoff vs server-side disconnect vs network drop). No behaviour reads it.
@@ -970,6 +1006,10 @@ namespace Finestra.UI
                 + (code.HasValue ? code.Value.ToString() : "n/a (killed by us)") + " — " + s.Name);
 
             SetRdpPhase(s, RdpPhase.Disconnected);
+            // Conn deliberately KEEPS pointing at the ended connection, so every field it owns reads exactly as it
+            // did before this refactor (phase Disconnected, Proc/Stats null, Child zero). Last is what survives a
+            // future reconnect replacing Conn.
+            s.Last = s.Conn;
             if (IndexOf(s) == _active) { try { Ui.SetStats(RdpBarText(s)); } catch { } }   // reason may have changed the text
         }
 

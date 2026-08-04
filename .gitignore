@@ -418,3 +418,4 @@ installer/Output/
 
 # stray unreferenced image in the working tree
 c29dd57c-3bf1-4bf8-8aab-409301167b15.jpg
+installer/TESTBUILD-*/

@@ -25,6 +25,32 @@ if (-not (Test-Path $icon))               { throw "App icon not found: '$icon'."
 foreach ($a in 'x64','x86','arm') {
     if (-not (Test-Path "$rel\engine\$a\wfreerdp.exe")) { throw "Engine missing: '$rel\engine\$a\wfreerdp.exe' - stage the RELEASE engines first." }
 }
+
+# ENGINE PROVENANCE GUARD -----------------------------------------------------------------------
+# The development engine tree carries spike code that must never reach a release: the windowed
+# Windows-key passthrough and the Media Foundation camera backend. Both are deliberately excluded
+# from the publication branch, so an engine built from the development tree would ship them
+# silently. Detect them by what actually survives compilation - a source comment does not, so a
+# marker like FIN-RDP-WINV is absent from the binary in both ASCII and UTF-16 and cannot be used.
+#   WinV   : the hook is the only caller of GetAsyncKeyState in this client (verified: 1 hit in a
+#            WinV build, 0 in the shipped 1.0.2 engines).
+#   camera : the Media Foundation backend pulls in mfplat / mfreadwrite imports.
+foreach ($a in 'x64','x86','arm') {
+    $engPath = "$rel\engine\$a\wfreerdp.exe"
+    $bytes   = [System.IO.File]::ReadAllBytes($engPath)
+    $ascii   = [System.Text.Encoding]::ASCII.GetString($bytes)
+    $wide    = [System.Text.Encoding]::Unicode.GetString($bytes)     # a marker may be UTF-16
+    if ($ascii.Contains('GetAsyncKeyState') -or $wide.Contains('GetAsyncKeyState')) {
+        throw "Engine '$a' carries the windowed Windows-key (WinV) spike. Build release engines from the publication branch (finestra-arm32-rt-3.28), not the development tree."
+    }
+    foreach ($mf in 'mfplat.dll','mfreadwrite.dll') {
+        if ($ascii.ToLower().Contains($mf) -or $wide.ToLower().Contains($mf)) {
+            throw "Engine '$a' carries the camera spike (imports $mf). Build release engines from the publication branch (finestra-arm32-rt-3.28), not the development tree."
+        }
+    }
+}
+Write-Host "[build] engine provenance guard: x64/x86/arm clean (no WinV hook, no camera spike)"
+
 foreach ($f in 'LICENSE','THIRD-PARTY-NOTICES.txt','FREERDP-MODIFICATIONS.txt') {
     if (-not (Test-Path (Join-Path $root $f))) { throw "Legal file missing at repo root: $f" }
 }

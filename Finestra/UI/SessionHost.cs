@@ -146,6 +146,18 @@ namespace Finestra.UI
             public bool EverEmbedded;
             public int ConnectTicks;
 
+            /// <summary>FIN-RDP-RECONNECT-1 T3 — wfreerdp's exit code, captured ONLY when the engine exited on its
+            /// own (the process-exited teardown path). null when we killed it ourselves, because then the code is
+            /// ours, not the engine's, and would be actively misleading.
+            /// ⚠ THE CODE-TO-MEANING MAPPING IS UNVERIFIED. Nothing in this app has yet observed which value
+            /// FreeRDP returns for a clean logoff vs a server-side disconnect vs a network drop — that needs three
+            /// real sessions against a real server. It is captured and logged so those runs can be read off a log
+            /// later. NOTHING IS GATED ON IT, and nothing may be gated on it until the mapping is measured.</summary>
+            public int? ExitCode;
+            /// <summary>FIN-RDP-RECONNECT-1 T3 — which teardown path ran ("engine exited" / "heartbeat dead"), so
+            /// the bar and the log can tell them apart. Display only.</summary>
+            public string DisconnectReason;
+
             /// <summary>FRDP-RDP-LIVENESS Part 1 — DateTime.UtcNow.Ticks of the last STATS heartbeat (set the
             /// moment the pipe is started, so total silence from the start counts too, not just going-quiet-later).
             /// A raw long behind Interlocked, not a DateTime field: this is written from the StatsPipe reader
@@ -187,7 +199,24 @@ namespace Finestra.UI
         /// <summary>FRDP-RDP-LIVENESS Part 1 — how long the STATS heartbeat can go silent before a session is
         /// declared dead. Deliberately conservative: the engine streams ~1 line/sec while healthy, so this is a
         /// 12-15x margin over a single missed beat — a false "dead" verdict on a merely-busy/stressed device is
-        /// worse than the frozen-tab bug this closes (see Part 2's under-load proof).</summary>
+        /// worse than the frozen-tab bug this closes (see Part 2's under-load proof).
+        ///
+        /// ★ TWO COUPLINGS TO RE-CHECK BEFORE CHANGING THIS NUMBER OR THE STATS PIPE (FIN-RDP-RECONNECT-1 T4a):
+        ///
+        /// 1. 15 s is EXACTLY FreeRDP's default gap between auto-reconnect attempts. That gap is
+        ///    FreeRDP_TcpConnectTimeout (default 15000 ms), returned by client_common_retry_dialog and used as the
+        ///    inter-retry delay in client_auto_reconnect_ex — NOT the 5000 ms literal that appears at the call
+        ///    site, which only applies when no RetryDialog callback is installed, and one always is.
+        ///
+        /// 2. This is only survivable because the engine's stats pipe is PROCESS-scoped, not SESSION-scoped.
+        ///    wf_stats_pipe_thread is a standalone loop that reads three global atomics and writes one line per
+        ///    second; it never consults the transport, and wf_post_disconnect does not touch it. So the heartbeat
+        ///    keeps flowing while FreeRDP retries internally, and this timer cannot reap an engine that is merely
+        ///    mid-auto-reconnect (~20 retries x 15 s at the defaults).
+        ///
+        /// Change either one and they can collide: make the pipe session-scoped, or drop this below the retry gap,
+        /// and a user with +auto-reconnect on gets their engine killed during the first retry. Also note that
+        /// Finestra's /timeout: option feeds the SAME FreeRDP setting as the retry gap — see RdpLauncher.</summary>
         private const int HeartbeatDeadSeconds = 15;
 
         private readonly Form _manager;
@@ -760,14 +789,26 @@ namespace Finestra.UI
                 }
                 return;
             }
-            if (s.Proc != null && s.Proc.HasExited) { SetRdpPhase(s, RdpPhase.Disconnected); return; }   // dropped after embed
+            // Dropped after embed: the engine exited on its own. Before FIN-RDP-RECONNECT-1 this set the phase and
+            // disposed NOTHING — the StatsPipe, the Process handle and the stale child HWND all leaked for as long
+            // as the tab stayed open, and the other disconnect path (heartbeat, below) cleaned up a different
+            // subset. Both now funnel through the one teardown so a dropped tab has exactly one observable state.
+            if (s.Proc != null && s.Proc.HasExited) { DisconnectRdpSession(s, "engine exited"); return; }
 
-            // FRDP-RDP-LIVENESS Part 1 — Proc.HasExited only catches a fully-exited process. A HUNG engine (the
-            // process is still alive, but its channel died — confirmed the mechanism for this by Part 0's harness
-            // ruling out a stale/disposed-sibling pipe reference) needs a second signal: the engine streams a
-            // STATS line ~1/sec while healthy, so sustained silence means the channel is dead even though the OS
-            // process isn't. Deliberately runs BEFORE the minimized/frozen early-returns below — those guard the
-            // resize watchdog, not liveness, and a hung session must be caught even while backgrounded or frozen.
+            // FRDP-RDP-LIVENESS Part 1 — a second signal beyond Proc.HasExited, which only catches a process that
+            // has fully exited.
+            //
+            // ⚠ WHAT THIS ACTUALLY DETECTS (corrected FIN-RDP-RECONNECT-1 T4c — the previous wording here claimed
+            // it caught "a hung engine whose channel died", and the engine source does not support that):
+            // the STATS producer is wf_stats_pipe_thread, a standalone loop that reads three global atomics and
+            // writes one line per second. It never looks at the transport. So sustained silence means the ENGINE
+            // PROCESS is wedged or gone, or the PIPE broke — NOT that the RDP channel died. A session whose
+            // transport is dead while the process still runs keeps emitting STATS with stale numbers and is NOT
+            // caught here. That gap is real, is written up in FIN-RDP-RECONNECT-1 T6, and needs an engine-side
+            // fix (a sequence number or last-activity timestamp in the STATS line) — not an app-side threshold.
+            //
+            // Deliberately runs BEFORE the minimized/frozen early-returns below — those guard the
+            // resize watchdog, not liveness, and a wedged session must be caught even while backgrounded or frozen.
             // Debounced + conservative: the ONLY trigger is sustained heartbeat silence; a Send() failure is logged
             // as corroborating context but never independently trips this (see StatsPipe.LastSendFailed).
             if (s.Stats != null)
@@ -777,9 +818,7 @@ namespace Finestra.UI
                 {
                     FileLog.Line("[HOST] rdp heartbeat DEAD pid=" + s.Stats.Pid + " (no STATS for " + idle.ToString("0.0") + "s"
                         + (s.Stats.LastSendFailed ? ", + a failed write" : "") + ") — " + s.Name);
-                    try { s.Stats?.Dispose(); } catch { }
-                    try { if (s.Proc != null && !s.Proc.HasExited) s.Proc.Kill(); } catch { }   // FRDP-FIXSWEEP B7 — reap the hung engine, don't leave a zombie
-                    SetRdpPhase(s, RdpPhase.Disconnected);
+                    DisconnectRdpSession(s, "heartbeat dead");   // reaps the engine (FRDP-FIXSWEEP B7) — no zombie
                     return;
                 }
             }
@@ -878,10 +917,60 @@ namespace Finestra.UI
             switch (s.Phase)
             {
                 case RdpPhase.Failed: return "● failed";
-                case RdpPhase.Disconnected: return "● disconnected";
+                // FIN-RDP-RECONNECT-1 T3 — the two drop paths are distinguishable to the user, in plain words:
+                // the engine ending by itself is an ordinary "disconnected"; us reaping a silent engine is worth
+                // saying out loud, because it looks identical from the outside but has a different cause.
+                // Deliberately NOT the exit code — that mapping is unverified, so showing it would assert meaning
+                // this project has not yet measured.
+                case RdpPhase.Disconnected:
+                    return s.DisconnectReason == "heartbeat dead" ? "● disconnected · no response" : "● disconnected";
                 case RdpPhase.Connected: return s.LastStats;
                 default: return "● connecting…";
             }
+        }
+
+        /// <summary>FIN-RDP-RECONNECT-1 T2 — THE single RDP disconnect teardown. Both drop paths (the engine
+        /// exiting on its own, and the heartbeat going silent) end here, so a dropped-but-open tab always has the
+        /// SAME observable state: Stats disposed+null, Proc reaped+disposed+null, <see cref="Session.Child"/> back
+        /// to IntPtr.Zero, phase Disconnected — and <see cref="Session.RdpParent"/> still ALIVE.
+        ///
+        /// Why RdpParent survives: it is the tab's own /parent-window panel, owned by the tab and not by the
+        /// connection. Disposing it here would destroy the container the tab is drawn in. Only CloseSession, which
+        /// is tearing the whole tab down, disposes it.
+        ///
+        /// Why Child MUST be cleared: the re-embed poll at the top of ChildTickOne is gated on
+        /// `s.Child == IntPtr.Zero`. Leaving a dead HWND cached there means a future engine launched into the same
+        /// Session would never be discovered, fitted or shown. That is correct cleanup on its own terms — a handle
+        /// to a destroyed window has no business outliving it — and it is also the one thing that has to be true
+        /// before any reconnect can work at all.</summary>
+        private void DisconnectRdpSession(Session s, string reason)
+        {
+            if (s == null) return;
+
+            // ExitCode is ONLY meaningful when the engine exited by itself. Read it BEFORE Dispose() (which
+            // releases the handle the code is read through) and BEFORE any Kill() (which would make the code ours).
+            int? code = null;
+            try { if (s.Proc != null && s.Proc.HasExited) code = s.Proc.ExitCode; } catch { }
+
+            if (s.Stats != null) FileLog.Line("[STATS pid=" + s.Stats.Pid + "] disposed (" + reason + ") — " + s.Name);
+            try { s.Stats?.Dispose(); } catch { }
+            s.Stats = null;
+
+            try { if (s.Proc != null && !s.Proc.HasExited) s.Proc.Kill(); } catch { }
+            try { s.Proc?.Dispose(); } catch { }   // FRDP-FIXSWEEP B17 — release the Process handle/plumbing
+            s.Proc = null;
+
+            s.Child = IntPtr.Zero;
+            s.ExitCode = code;
+            s.DisconnectReason = reason;
+
+            // ⚠ UNVERIFIED MAPPING — this log line is the raw material for working out what FreeRDP's exit codes
+            // actually mean (clean logoff vs server-side disconnect vs network drop). No behaviour reads it.
+            FileLog.Line("[HOST] rdp teardown (" + reason + ") exit="
+                + (code.HasValue ? code.Value.ToString() : "n/a (killed by us)") + " — " + s.Name);
+
+            SetRdpPhase(s, RdpPhase.Disconnected);
+            if (IndexOf(s) == _active) { try { Ui.SetStats(RdpBarText(s)); } catch { } }   // reason may have changed the text
         }
 
         private void SetRdpPhase(Session s, RdpPhase phase)

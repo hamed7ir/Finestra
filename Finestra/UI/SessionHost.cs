@@ -711,15 +711,71 @@ namespace Finestra.UI
             var s = _sessions[_active];
             if (s.IsSsh) s.Ssh.Reconnect();
             else if (s.IsFtp) s.Ftp.Reconnect();
+            else RelaunchRdp(s);   // FIN-RDP-RECONNECT-2 C3
         }
 
-        /// <summary>Show/hide the bar Reconnect button for a session (dropped SSH/FTP → visible; RDP → always hidden).</summary>
+        /// <summary>Show/hide the bar Reconnect button for a session: SSH/FTP when their transport dropped, RDP
+        /// when the session is Disconnected.
+        ///
+        /// RDP used to be excluded outright, on the stated grounds that "FreeRDP +auto-reconnect owns that". It
+        /// does not: +auto-reconnect defaults to FALSE, so out of the box nothing owned RDP reconnect at all and a
+        /// dropped tab was simply a dead tab.
+        ///
+        /// NOT gated on ExitCode — a clean logoff gets the button too. Its meaning is unmeasured (see
+        /// RdpConnection.ExitCode), and offering to reconnect after a logoff is harmless, whereas hiding the
+        /// button because of a code we have guessed at is not.
+        ///
+        /// NOT suppressed while +auto-reconnect is on. There is nothing to race: the engine's stats pipe is
+        /// process-scoped and keeps the heartbeat flowing while FreeRDP retries internally, so the app cannot be
+        /// showing Disconnected at the same time the engine is still retrying (FIN-RDP-RECONNECT-1 T1).
+        ///
+        /// busy is always false for RDP: the relaunch is synchronous, and the new connection's phase is
+        /// Connecting the moment it returns, which hides the button on its own.</summary>
         private void PushReconnect(Session s)
         {
             bool show = false, busy = false;
             if (s.IsSsh) { show = s.Ssh.ShowReconnect; busy = s.Ssh.Reconnecting; }
             else if (s.IsFtp) { show = s.Ftp.ShowReconnect; busy = s.Ftp.Reconnecting; }
+            else show = s.Phase == RdpPhase.Disconnected;
             Ui.SetReconnect(show, busy);
+        }
+
+        /// <summary>FIN-RDP-RECONNECT-2 C3 — relaunch the engine into the SAME tab. Mirrors SshContent's
+        /// Reconnect shape minus scrollback (RDP has none to preserve): it is honestly a relaunch, not a
+        /// resumption of the old session — the server sees a brand-new connection.
+        ///
+        /// The tab keeps its identity, its position and its /parent-window panel; only the connection is
+        /// replaced, which after the C1 split is one assignment. No credential UI is needed: the app never
+        /// prompts for RDP anyway — with no saved password an empty line goes down /from-stdin and wfreerdp's own
+        /// prompt handles it, exactly as on the first connect.</summary>
+        private void RelaunchRdp(Session s)
+        {
+            if (s == null || s.IsSsh || s.IsFtp || s.RdpParent == null || s.RdpParent.IsDisposed) return;
+            if (s.Phase != RdpPhase.Disconnected) return;   // the button is only offered in that state
+
+            Size native = _fullscreen ? _mon.Size : _embedHost.ClientSize;
+            if (native.Width <= 0 || native.Height <= 0) native = _mon.Size;
+
+            var forceRdpParent = s.RdpParent.Handle;   // realize BEFORE launch — /parent-window needs a live HWND
+            var res = RdpLauncher.Launch(s.Profile, native.Width, native.Height, true, s.RdpParent.Handle);
+            if (!res.Ok)
+            {
+                FileLog.Line("[HOST] reconnect FAILED to launch — " + s.Name + ": " + (res.Error ?? "?"));
+                MessageBox.Show(this, res.Error ?? "Failed to launch wfreerdp.", "Finestra", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;   // stays Disconnected, so the button stays offered
+            }
+
+            var sess = RdpLauncher.ResolveEmitSize(s.Profile.Settings, native.Width, native.Height);
+            FileLog.Line("[HOST] reconnect pid=" + (res.Process != null ? res.Process.Id.ToString() : "?")
+                + " session=" + sess.Width + "x" + sess.Height + " embed=" + _embedHost.ClientSize + " — " + s.Name);
+
+            // ★ THE POINT OF THE C1 SPLIT: one assignment, and every field of the new connection is at its
+            // initial value by construction — Child zero, Stats null, phase Connecting, all the fit/pan
+            // bookkeeping fresh. Nothing to reset by hand and nothing to forget.
+            s.Conn = new RdpConnection { Proc = res.Process, Emitted = sess };
+
+            if (IndexOf(s) == _active) { s.RdpParent.Visible = true; try { Ui.SetStats(RdpBarText(s)); } catch { } }
+            PushReconnect(s);   // now Connecting → the button hides itself
         }
 
         private void OnFtpConnectFailed(FtpContent c)
@@ -1018,7 +1074,14 @@ namespace Finestra.UI
             if (s.Phase == phase) return;
             s.Phase = phase;
             FileLog.Line("[HOST] rdp " + phase.ToString().ToLowerInvariant() + " — " + s.Name);
-            if (IndexOf(s) == _active) { try { Ui.SetStats(RdpBarText(s)); } catch { } }
+            if (IndexOf(s) == _active)
+            {
+                try { Ui.SetStats(RdpBarText(s)); } catch { }
+                // FIN-RDP-RECONNECT-2 C3 — the phase IS the button's condition for RDP, so it has to be pushed
+                // here too; tab-switch alone (the only previous caller) would leave a tab that dropped while
+                // focused showing no button until the user switched away and back.
+                try { PushReconnect(s); } catch { }
+            }
         }
 
         private void OnPauseToggled()
@@ -1086,13 +1149,14 @@ namespace Finestra.UI
             else if (s.IsFtp) { try { s.Ftp.Dispose(); } catch { } }
             else
             {
-                // FRDP-RDP-LIVENESS Part 0 — when a same-named sibling tab's stats pipe gets torn down matters:
-                // correlate this timestamp against any later "[STATS pid=…] send failed" to tell a live session's
-                // own dead channel apart from a write that (were it ever possible) reached a disposed sibling's.
-                if (s.Stats != null) FileLog.Line("[STATS pid=" + s.Stats.Pid + "] disposed (tab closed) — " + s.Name);
-                try { s.Stats?.Dispose(); } catch { }
-                try { if (s.Proc != null && !s.Proc.HasExited) s.Proc.Kill(); } catch { }
-                try { s.Proc?.Dispose(); } catch { }   // FRDP-FIXSWEEP B17 — release the Process handle/plumbing
+                // FIN-RDP-RECONNECT-2 C2 — the third teardown path. It used to hand-roll the same disposal as the
+                // two drop paths and drifted from them (it logged "(tab closed)" but never cleared s.Child, and
+                // predated the nulling). It now shares the one implementation, so a tab closed while live and a
+                // tab closed after dropping end up in exactly the same place.
+                // FRDP-RDP-LIVENESS Part 0 — the disposal timestamp still gets logged (by DisconnectRdpSession),
+                // which is what lets a later "[STATS pid=…] send failed" be told apart from a disposed sibling's.
+                DisconnectRdpSession(s, "tab closed");
+                // ONLY this path disposes the parent panel: it is tab-scoped, and the tab is going away.
                 try { s.RdpParent?.Dispose(); } catch { }   // FRDP-RDP-KBD-FIX — this session's dedicated /parent-window panel
             }
             _sessions.RemoveAt(i);
@@ -1617,9 +1681,10 @@ namespace Finestra.UI
                 else if (s.IsFtp) { try { s.Ftp.Dispose(); } catch { } }
                 else
                 {
-                    try { s.Stats?.Dispose(); } catch { }
-                    try { if (s.Proc != null && !s.Proc.HasExited) s.Proc.Kill(); } catch { }
-                    try { s.Proc?.Dispose(); } catch { }   // FRDP-FIXSWEEP B17 — release the Process handle/plumbing
+                    // FIN-RDP-RECONNECT-2 C2 — the FOURTH copy of this teardown (host closing, every tab at once).
+                    // Collapsed for the same reason as CloseSession: leaving one hand-rolled copy behind is how
+                    // the paths drifted apart in the first place.
+                    DisconnectRdpSession(s, "host closed");
                     try { s.RdpParent?.Dispose(); } catch { }   // FRDP-RDP-KBD-FIX — this session's dedicated /parent-window panel
                 }
             }

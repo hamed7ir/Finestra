@@ -24,8 +24,10 @@ namespace Finestra.UI.Controls
         void SetPauseVisible(bool visible);
         void SetMaximized(bool maximized);
         void SetFullscreen(bool fullscreen);
-        /// <summary>FRDP-RECONNECT — show/hide the Reconnect button for the active SSH/FTP tab: visible when the
-        /// session is dropped or an attempt is running; busy = "Reconnecting…" (disabled). Never for RDP tabs.</summary>
+        /// <summary>FRDP-RECONNECT — show/hide the Reconnect button for the active tab: visible when the session
+        /// is dropped or an attempt is running; busy = "Reconnecting…" (disabled). RDP tabs are included since
+        /// FIN-RDP-RECONNECT-2 (they show it when Disconnected); the original "never for RDP" rule assumed
+        /// FreeRDP's +auto-reconnect covered it, and that setting defaults to false.</summary>
         void SetReconnect(bool visible, bool busy);
         /// <summary>The Reconnect button was clicked (only fires when visible + not busy).</summary>
         event Action ReconnectClicked;

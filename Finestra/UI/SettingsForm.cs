@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Windows.Forms;
 using Finestra.Core;
@@ -78,31 +78,38 @@ namespace Finestra.UI
             // see FIN-AV-REDIR-RECON.md.) The emit is independently x64-guarded in RdpLauncher.BuildTokens.
             bool x64 = RdpLauncher.DetectArch() == "x64";
             ToggleRow microphone = x64 ? Toggle("Redirect microphone (x64)", _s.Microphone, v => _s.Microphone = v) : null;
-            // FIN-RDPECAM — camera redirect (webcam) is x64-ONLY too (the MF rdpecam backend ships only in
-            // the x64 engine path). Resolution is user-selectable because it's the main stutter lever —
-            // lower res = lighter realtime H.264 encode + upload. Hidden on non-x64; emit is x64-guarded.
-            ToggleRow camera = x64 ? Toggle("Redirect camera (x64)", _s.Camera, v => _s.Camera = v) : null;
-            ChoiceRow cameraRes = x64
+            // FIN-RDPECAM — camera redirect (webcam) is x64-ONLY (the MF rdpecam backend). Resolution is
+            // user-selectable because it's the main stutter lever — lower res = lighter realtime H.264
+            // encode + upload.
+            // FIN-CAMERA-CAPABILITY — ALSO gated on the engine that would actually launch implementing
+            // /camera:. A public engine does not have it, and an unknown switch is FATAL there (WinPR
+            // rejects the whole command line), so showing a toggle a user could enable would be offering
+            // them a way to break their own connection. Same probe the launch uses, so UI and launch agree.
+            // ⚠ This HIDES the control; it never edits the profile. A stored Camera=true stays true and
+            // starts working again as soon as a capable engine is in place.
+            bool camOk = x64 && RdpLauncher.CameraSupportedByCurrentEngine();
+            ToggleRow camera = camOk ? Toggle("Redirect camera (x64)", _s.Camera, v => _s.Camera = v) : null;
+            ChoiceRow cameraRes = camOk
                 ? Choice("Camera resolution", CameraResUi.Options, (int)_s.CameraResolution,
                          i => _s.CameraResolution = (CameraResOpt)i)
                 : null;
             // Frame rate (30/60/90/120/Custom). Above 30 needs the sensor to support it; the engine clamps
             // to the highest rate the sensor actually offers.
-            ChoiceRow cameraFps = x64
+            ChoiceRow cameraFps = camOk
                 ? Choice("Camera frame rate", CameraFpsUi.Options, (int)_s.CameraFps,
                          i => _s.CameraFps = (CameraFpsOpt)i)
                 : null;
-            TextRow cameraFpsCustom = x64
+            TextRow cameraFpsCustom = camOk
                 ? Num("Custom fps (used when 'Custom…')", _s.CameraFpsCustom, v => _s.CameraFpsCustom = v)
                 : null;
             // FIN-RDPECAM-HWENC — GPU hardware H.264 encoder vs software openh264. Auto/Hardware prefer the GPU
             // (fail-closed to software); Software forces openh264. The GPU path moves encode off the CPU, which
             // is what makes 1080p smooth on weak CPUs.
-            ChoiceRow cameraEncoder = x64
+            ChoiceRow cameraEncoder = camOk
                 ? Choice("Camera encoder", CameraEncoderUi.Options, (int)_s.CameraEncoder,
                          i => _s.CameraEncoder = (CameraEncoderOpt)i)
                 : null;
-            ChoiceRow cameraBitrate = x64
+            ChoiceRow cameraBitrate = camOk
                 ? Choice("Camera bitrate", CameraBitrateUi.Options, (int)_s.CameraBitrate,
                          i => _s.CameraBitrate = (CameraBitrateOpt)i)
                 : null;

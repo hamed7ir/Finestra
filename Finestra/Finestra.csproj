@@ -106,6 +106,7 @@
     <Compile Include="Core\SftpBackend.cs" />
     <Compile Include="Core\SshAuth.cs" />
     <Compile Include="Core\Startup.cs" />
+    <Compile Include="Core\EngineCapabilities.cs" />
     <Compile Include="Core\RdpLauncher.cs" />
     <Compile Include="Core\RdpModels.cs" />
     <Compile Include="Core\Secret.cs" />

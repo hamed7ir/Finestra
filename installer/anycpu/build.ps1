@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 #  Builds the AnyCPU .NET installer (Setup.exe + payload.zip) AND the portable ZIP
 #  from Finestra\bin\Release. Pattern MIRRORED from CS-Ray installer/anycpu/build.ps1.
 #
@@ -13,6 +13,25 @@
 #    Finestra-<version>-portable.zip              (ship: extract anywhere, run Finestra.exe)
 #    SHA256SUMS.txt
 # =============================================================================
+# PRIVATE packaging opt-in — the ONLY way past the engine provenance guard below.
+#
+# NAMED FOR THE GUARD, NOT FOR ONE FEATURE. The guard detects spike code in general: the windowed
+# Windows-key hook (GetAsyncKeyState) as well as the Media Foundation camera backend (mfplat /
+# mfreadwrite imports), and anything else added to it later. A switch called -PrivateCameraBuild
+# would have implied camera was the only thing it let through, which is wrong and would age badly.
+#
+# It is a named switch on purpose -- an environment variable can be left set from a previous shell
+# and silently taint the next build, which is exactly how a spike engine would eventually ship. It
+# must be typed, per invocation, by someone who means it.
+#   .\build.ps1 -AllowSpikeEngines
+# With it: a spike-carrying engine is allowed through, the artefacts are renamed so they cannot be
+# mistaken for a release, and a PRIVATE-DO-NOT-DISTRIBUTE marker is written beside them.
+# Without it: behaviour is EXACTLY as before -- the guard still refuses.
+#
+# The camera / rdpecam feature is PRIVATE: not published, not released. This switch is how a private
+# build is made deliberately, and the renaming + marker are how its output stays distinguishable.
+param([switch]$AllowSpikeEngines)
+
 $ErrorActionPreference = 'Stop'
 $root   = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # repo root (...\Finestra)
 $rel    = Join-Path $root 'Finestra\bin\Release'
@@ -49,6 +68,7 @@ $EnginePresent = @($EngineKnown | Where-Object { Test-Path "$rel\engine\$_\wfree
 $EngineAbsent  = @($EngineKnown | Where-Object { $EnginePresent -notcontains $_ })
 Write-Host ("[build] engines: required {0} OK; binaries present {1}{2}" -f ($EngineRequired -join '/'), ($EnginePresent -join '/'), $(if ($EngineAbsent.Count) { "; absent (optional) " + ($EngineAbsent -join '/') } else { "" }))
 
+$spikeEngines = @()
 # ENGINE PROVENANCE GUARD -----------------------------------------------------------------------
 # The development engine tree carries spike code that must never reach a release: the windowed
 # Windows-key passthrough and the Media Foundation camera backend. Both are deliberately excluded
@@ -63,16 +83,27 @@ foreach ($a in $EnginePresent) {
     $bytes   = [System.IO.File]::ReadAllBytes($engPath)
     $ascii   = [System.Text.Encoding]::ASCII.GetString($bytes)
     $wide    = [System.Text.Encoding]::Unicode.GetString($bytes)     # a marker may be UTF-16
-    if ($ascii.Contains('GetAsyncKeyState') -or $wide.Contains('GetAsyncKeyState')) {
-        throw "Engine '$a' carries the windowed Windows-key (WinV) spike. Build release engines from the publication branch (finestra-arm32-rt-3.28), not the development tree."
-    }
+    $hasWinV = $ascii.Contains('GetAsyncKeyState') -or $wide.Contains('GetAsyncKeyState')
+    $hasCam  = $false
     foreach ($mf in 'mfplat.dll','mfreadwrite.dll') {
-        if ($ascii.ToLower().Contains($mf) -or $wide.ToLower().Contains($mf)) {
-            throw "Engine '$a' carries the camera spike (imports $mf). Build release engines from the publication branch (finestra-arm32-rt-3.28), not the development tree."
+        if ($ascii.ToLower().Contains($mf) -or $wide.ToLower().Contains($mf)) { $hasCam = $true }
+    }
+    if ($hasWinV -or $hasCam) {
+        # -AllowSpikeEngines is the ONLY bypass, and it is loud: the artefacts get renamed and marked.
+        if (-not $AllowSpikeEngines) {
+            $what = @(); if ($hasWinV) { $what += 'the windowed Windows-key (WinV) spike' }; if ($hasCam) { $what += 'the camera spike (mfplat/mfreadwrite)' }
+            throw "Engine '$a' carries $($what -join ' and '). Build release engines from the publication branch (finestra-arm32-rt-3.28), not the development tree. If this is a deliberate PRIVATE build, re-run with -AllowSpikeEngines."
         }
+        $spikeEngines += $a
+        Write-Host ("[build] PRIVATE: engine '{0}' carries {1} - allowed by -AllowSpikeEngines" -f $a, $(if ($hasCam -and $hasWinV) { 'camera + WinV' } elseif ($hasCam) { 'camera' } else { 'WinV' }))
     }
 }
-Write-Host ("[build] engine provenance guard: {0} clean (no WinV hook, no camera spike)" -f ($EnginePresent -join '/'))
+if ($AllowSpikeEngines -and $spikeEngines.Count -eq 0) {
+    Write-Host "[build] PRIVATE: -AllowSpikeEngines was given but no staged engine carries a spike - output is still marked private."
+}
+if (-not $AllowSpikeEngines) {
+    Write-Host ("[build] engine provenance guard: {0} clean (no WinV hook, no camera spike)" -f ($EnginePresent -join '/'))
+}
 
 foreach ($f in 'LICENSE','THIRD-PARTY-NOTICES.txt','FREERDP-MODIFICATIONS.txt') {
     if (-not (Test-Path (Join-Path $root $f))) { throw "Legal file missing at repo root: $f" }
@@ -140,7 +171,11 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 # 1a. The PORTABLE ZIP is the same stage, zipped as-is (the RT no-install path AND the GPL relinking path:
 #     a user can swap any DLL/engine and re-run - nothing is registered anywhere).
-$portable = Join-Path $root "installer\Output\Finestra-$ver-portable.zip"
+# FIN-CAMERA-CAPABILITY G4 — a private build must be UNMISTAKABLE. The name carries PRIVATE and
+# DO-NOT-DISTRIBUTE, so it cannot be confused with a release artefact in a folder listing, in a chat
+# window, or six months from now.
+$nameTag = if ($AllowSpikeEngines) { "PRIVATE-DO-NOT-DISTRIBUTE-$ver" } else { $ver }
+$portable = Join-Path $root "installer\Output\Finestra-$nameTag-portable.zip"
 if (Test-Path $portable) { Remove-Item $portable -Force }
 [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $portable)
 
@@ -161,9 +196,33 @@ if ($LASTEXITCODE -ne 0) { throw "csc failed ($LASTEXITCODE)" }
 
 # 3. Package the RT-runnable installer distributable (Setup.exe + payload.zip must travel together -
 #    Setup.exe extracts payload.zip from next to itself).
-$dist = Join-Path $root "installer\Output\Finestra-Setup-$ver.zip"
+$dist = Join-Path $root "installer\Output\Finestra-Setup-$nameTag.zip"
 if (Test-Path $dist) { Remove-Item $dist -Force }
 [System.IO.Compression.ZipFile]::CreateFromDirectory($outdir, $dist)
+
+# 3b. FIN-CAMERA-CAPABILITY G4 — the marker, written BESIDE the artefacts.
+if ($AllowSpikeEngines) {
+    $marker = Join-Path $root 'installer\Output\PRIVATE-DO-NOT-DISTRIBUTE.txt'
+    @(
+      'PRIVATE BUILD - DO NOT DISTRIBUTE, DO NOT PUBLISH, DO NOT ATTACH TO A RELEASE.',
+      '',
+      "Produced $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') by installer\anycpu\build.ps1 -AllowSpikeEngines.",
+      'That switch exists to package an engine carrying PRIVATE spike code, which the provenance',
+      'guard otherwise refuses outright.',
+      '',
+      $(if ($spikeEngines.Count) { "Engines carrying spike code: $($spikeEngines -join ', ')" }
+        else { 'No staged engine carried spike code, but the switch was given, so this output is marked private anyway.' }),
+      '',
+      'The camera / rdpecam feature is PRIVATE. Nothing about it - the binary, its source, its patches,',
+      'or the /camera: switch - is published, committed to a public repo, or pushed to hamed7ir/FreeRDP',
+      'without explicit approval, per instance. Private does NOT mean deprecated: the feature is kept',
+      'and supported for private builds.',
+      '',
+      'The published release artefacts are the ones WITHOUT this marker and without PRIVATE in their',
+      'file names. If you are looking at a folder containing both, the private ones are not shippable.'
+    ) | Set-Content $marker -Encoding utf8
+    Write-Host "[build] PRIVATE: wrote $marker"
+}
 
 # 4. Checksums.
 $sums = Join-Path $root 'installer\Output\SHA256SUMS.txt'

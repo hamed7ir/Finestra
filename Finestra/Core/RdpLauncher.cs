@@ -56,8 +56,11 @@ namespace Finestra.Core
         }
 
         /// <summary>Builds the ordered arg tokens (no password). <paramref name="useStdin"/> adds /from-stdin;
-        /// otherwise the caller appends /p separately (fallback).</summary>
-        public static List<string> BuildTokens(ConnectionProfile cp, int primaryW, int primaryH, bool useStdin, IntPtr parentWindow = default(IntPtr))
+        /// otherwise the caller appends /p separately (fallback).
+        /// <paramref name="enginePath"/> is the wfreerdp that will actually run: capability-gated switches are
+        /// emitted only when THAT binary implements them (see <see cref="EngineCapabilities"/>). Left null the
+        /// gated switches are omitted — the safe direction, since an unknown switch is fatal, not ignored.</summary>
+        public static List<string> BuildTokens(ConnectionProfile cp, int primaryW, int primaryH, bool useStdin, IntPtr parentWindow = default(IntPtr), string enginePath = null)
         {
             var t = new List<string>();
             var s = cp.Settings ?? new SettingsProfile();
@@ -137,7 +140,12 @@ namespace Finestra.Core
             // FIN-RDPECAM — camera (webcam) redirect, x64-ONLY (MF rdpecam backend). Emit the chosen
             // resolution as a cap so the server negotiates a lighter format (the main stutter lever).
             // x64-guarded like mic: a profile with Camera=true opened on a non-x64 device never emits it.
-            if (s.Camera && DetectArch() == "x64")
+            // FIN-CAMERA-CAPABILITY — /camera: is implemented ONLY by the private camera engine. A public
+            // engine does not ignore it: WinPR rejects the entire command line and exits before connecting, so
+            // emitting it blindly made a Camera=true profile unable to connect at all. Gate on what the engine
+            // that will actually run can parse. The profile is NEVER rewritten — it keeps Camera=true and starts
+            // emitting again the moment a capable engine is in place.
+            if (s.Camera && DetectArch() == "x64" && EngineCapabilities.SupportsCamera(enginePath))
             {
                 int cw, ch;
                 CameraResUi.Dimensions(s.CameraResolution, out cw, out ch);
@@ -176,7 +184,7 @@ namespace Finestra.Core
                 return r;
             }
 
-            var tokens = BuildTokens(cp, primaryW, primaryH, useStdin, parentWindow);
+            var tokens = BuildTokens(cp, primaryW, primaryH, useStdin, parentWindow, exe);
             string args = JoinArgs(tokens);
 
             string password = cp.GetPassword();
@@ -202,7 +210,12 @@ namespace Finestra.Core
                 // FIN-RDPECAM-HWENC — camera H.264 encoder choice, passed to the engine as an env var (x64
                 // only, camera on). The engine's rdpecam h264 subsystem reads FREERDP_H264_ENCODER: "sw"
                 // forces openh264, anything else prefers the GPU hardware MFT (fail-closed back to openh264).
-                if (cp.Settings != null && cp.Settings.Camera && DetectArch() == "x64")
+                // Gated on the SAME capability as the /camera: switch. These env vars are inert on an engine
+                // with no camera backend, so this changes nothing functionally — but it means "camera off,
+                // because this engine cannot do it" is off EVERYWHERE rather than mostly, and the [CAMERA] log
+                // lines stop claiming settings were applied to an engine that will never read them.
+                if (cp.Settings != null && cp.Settings.Camera && DetectArch() == "x64"
+                    && EngineCapabilities.SupportsCamera(exe))
                 {
                     string enc = CameraEncoderUi.EnvValue(cp.Settings.CameraEncoder);
                     psi.EnvironmentVariables["FREERDP_H264_ENCODER"] = enc;
@@ -262,6 +275,15 @@ namespace Finestra.Core
         }
 
         /// <summary>Resolves the wfreerdp engine path (no diagnostic note).</summary>
+        /// <summary>FIN-CAMERA-CAPABILITY — would the engine this machine would actually launch accept /camera:?
+        /// Used by the settings UI so a toggle nobody could ever enable is not shown. Resolves the engine the
+        /// same way a real launch does, so the UI and the launch can never disagree.</summary>
+        public static bool CameraSupportedByCurrentEngine()
+        {
+            try { return EngineCapabilities.SupportsCamera(ResolveWfreerdpPath()); }
+            catch { return false; }
+        }
+
         public static string ResolveWfreerdpPath() => ResolveWfreerdpPath(out _);
 
         /// <summary>

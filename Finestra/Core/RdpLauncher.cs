@@ -113,6 +113,11 @@ namespace Finestra.Core
             if (gfx != null) t.Add("/gfx:" + gfx);
 
             // ── connection ──
+            // ⚠ /timeout: IS NOT ONLY A CONNECT TIMEOUT (FIN-RDP-RECONNECT-1 T4b). It sets FreeRDP_TcpConnectTimeout,
+            // which client_common_retry_dialog also returns as the DELAY BETWEEN AUTO-RECONNECT ATTEMPTS. So with
+            // +auto-reconnect on, lowering this also tightens the retry spacing (default 15000 ms x up to 20 retries),
+            // and SessionHost.HeartbeatDeadSeconds is calibrated against that same 15 s default — see the coupling
+            // note there before changing either.
             if (s.TimeoutMs > 0) t.Add("/timeout:" + s.TimeoutMs);
             if (s.AutoReconnect) t.Add("+auto-reconnect");
             if (s.TrustCertificate) t.Add("/cert:ignore");

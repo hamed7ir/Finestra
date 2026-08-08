@@ -141,7 +141,10 @@ namespace Finestra.UI
             public int ConnectTicks;
             /// <summary>FIN-RDP-RECONNECT-1 T3 — wfreerdp's exit code, captured ONLY when the engine exited on
             /// its own. null when we killed it, because then the code is ours and would be misleading.
-            /// ⚠ THE CODE-TO-MEANING MAPPING IS UNVERIFIED — nothing is gated on it. See DisconnectRdpSession.</summary>
+            /// FIN-AUDIO-EXIT — THREE codes are now MEASURED on hardware and only those three are given words
+            /// (RdpBarText/DisconnectDetail): 0x20014 sign-in, 0x2000D connection lost, 0x20006 unreachable.
+            /// ⚠ Every OTHER code remains unverified and is displayed raw. Nothing is gated on this value —
+            /// it drives display only. See DisconnectRdpSession and FIN-KBD-DEVICE-1 §5.</summary>
             public int? ExitCode;
             /// <summary>FIN-RDP-RECONNECT-1 T3 — which teardown path ended this connection. Display only.</summary>
             public string DisconnectReason;
@@ -1013,13 +1016,47 @@ namespace Finestra.UI
                 // FIN-RDP-RECONNECT-1 T3 — the two drop paths are distinguishable to the user, in plain words:
                 // the engine ending by itself is an ordinary "disconnected"; us reaping a silent engine is worth
                 // saying out loud, because it looks identical from the outside but has a different cause.
-                // Deliberately NOT the exit code — that mapping is unverified, so showing it would assert meaning
-                // this project has not yet measured.
-                case RdpPhase.Disconnected:
-                    return s.DisconnectReason == "heartbeat dead" ? "● disconnected · no response" : "● disconnected";
+                // FIN-AUDIO-EXIT Part 3 — the device trip MEASURED three exit codes, so those three now say what
+                // happened. The rule is unchanged: never words for a code nobody observed. See DisconnectDetail.
+                case RdpPhase.Disconnected: return "● disconnected" + DisconnectDetail(s);
                 case RdpPhase.Connected: return s.LastStats;
                 default: return "● connecting…";
             }
+        }
+
+        /// <summary>FIN-AUDIO-EXIT Part 3 — the trailing "· …" on a dropped RDP tab.
+        ///
+        /// Friendly words ONLY for exit codes this project has actually OBSERVED on a device — each row below
+        /// was read from a log where the matching ERRCONNECT_* constant appeared in the SAME session
+        /// (FIN-KBD-DEVICE-1 §5, RT 8.1 + Win10 ARM32). Every other code is shown RAW, because a wrong
+        /// explanation is worse than a number the user can search for. Do not add a case from upstream
+        /// documentation — an unmeasured mapping is exactly the assertion this bar has always refused to make.
+        ///
+        /// ⚠ WIDTH: the bar's stats readout is a fixed 240px, right-aligned, drawn with NO EndEllipsis
+        /// (SessionTabBar.StatsW / its DrawText flags). An overflowing string loses its LEFT end — the status
+        /// dot goes first — so it fails silently and ugly. Every string here was MEASURED in the real font,
+        /// not estimated. Budget after "● disconnected · " is roughly 127px (~20 characters).</summary>
+        private static string DisconnectDetail(Session s)
+        {
+            // Our own diagnosis outranks any engine code: if we reaped a silent engine, that is the story.
+            if (s.DisconnectReason == "heartbeat dead") return " · no response";
+            int? code = s.ExitCode;
+            if (code == null) return "";   // we killed it — the code would be ours, not the engine's
+            switch (code.Value)
+            {
+                case 0x00020014: return " · sign-in failed";    // MEASURED — ERRCONNECT_LOGON_FAILURE
+                case 0x0002000D: return " · connection lost";   // MEASURED — ERRCONNECT_CONNECT_TRANSPORT_FAILED
+                case 0x00020006: return " · unreachable";       // MEASURED — ERRCONNECT_CONNECT_FAILED
+                default: return " · " + FormatExitCode(code.Value);
+            }
+        }
+
+        /// <summary>A FreeRDP ERRCONNECT_* code is 0x0002xxxx and is searchable in hex — that is the form the
+        /// engine's own log prints. Anything else is shown as-is: notably -1, the one non-FreeRDP value we have
+        /// measured (an externally killed engine), which formatted as hex would falsely imply it is one.</summary>
+        private static string FormatExitCode(int c)
+        {
+            return (c >= 0x00020000 && c <= 0x0002FFFF) ? "0x" + c.ToString("X") : c.ToString();
         }
 
         /// <summary>FIN-RDP-RECONNECT-1 T2 — THE single RDP disconnect teardown. Both drop paths (the engine

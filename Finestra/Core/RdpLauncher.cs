@@ -127,8 +127,9 @@ namespace Finestra.Core
             if (!string.IsNullOrWhiteSpace(s.GatewayHost)) t.Add("/gateway:g:" + s.GatewayHost.Trim());
 
             // ── local resources ──
-            string audio = AudioValue(s.Audio);
-            if (audio != null) t.Add("/audio-mode:" + audio);
+            // FIN-AUDIO-EXIT — ALWAYS emitted. See AudioValue: an omitted /audio-mode is what made the
+            // engine load the silent backend, so there is deliberately no longer a path that skips it.
+            t.Add("/audio-mode:" + AudioValue(s.Audio));
             if (!s.Clipboard) t.Add("-clipboard");
             if (s.Drives) t.Add("+drives");
             if (s.Printer) t.Add("/printer");
@@ -300,10 +301,34 @@ namespace Finestra.Core
             try
             {
                 string configured = AppSettings.Instance.WfreerdpPath;
-                if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured)) return configured;
+                if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured))
+                {
+                    WarnEngineOverride(configured);
+                    return configured;
+                }
             }
             catch { }
             return SelectEngine(DetectArch(), out note);
+        }
+
+        /// <summary>A configured engine path REPLACES the bundled one for every session, and settings.json
+        /// is shared by every copy of Finestra running as the same user — so one stale or borrowed path
+        /// silently changes which engine a given copy runs, with nothing on screen to say so. Announce it
+        /// once per distinct override, named so it is greppable, and print BOTH paths so the reader can
+        /// see what was displaced. Equally the diagnosis for a 32-bit user who pointed the setting at
+        /// their own build and later forgot.</summary>
+        private static string _warnedOverride;
+        private static void WarnEngineOverride(string configured)
+        {
+            if (string.Equals(_warnedOverride, configured, StringComparison.OrdinalIgnoreCase)) return;
+            _warnedOverride = configured;
+            string ignored;
+            string bundled = null;
+            try { bundled = SelectEngine(DetectArch(), out ignored); } catch { }
+            FileLog.Line("[ENGINE-OVERRIDE] WARNING - running the CONFIGURED engine instead of the one bundled"
+                + " with this copy.  configured=" + configured
+                + "  bundled=" + (string.IsNullOrEmpty(bundled) ? "(none for this CPU)" : bundled)
+                + "  -- clear 'Path to wfreerdp.exe' in Settings to go back to the bundled engine.");
         }
 
         /// <summary>The detected OS architecture as an engine-folder key: "x64" | "x86" | "arm64" | "arm" |
@@ -416,9 +441,15 @@ namespace Finestra.Core
             switch (g) { case GfxOpt.Avc444: return "AVC444:on"; case GfxOpt.Avc420: return "AVC420:on";
                 case GfxOpt.Rfx: return "RFX:on"; case GfxOpt.Progressive: return "progressive:on"; default: return null; }
         }
+        /// <summary>FIN-AUDIO-EXIT — never returns null. <see cref="AudioOpt.Default"/> now emits the SAME
+        /// value as <see cref="AudioOpt.PlayLocal"/> ("0" = play on this computer), measured on RT 8.1.
+        /// ⚠ Do NOT reintroduce a null/omitted case. Omitting /audio-mode hands the choice to the engine's
+        /// own default, which selected the SILENT "fake" rdpsnd backend — so every profile that never
+        /// visited the audio setting had no sound (FIN-KBD-DEVICE-1 §8). Emitting explicitly also PINS the
+        /// behaviour, so a future engine bump cannot change it underneath us.</summary>
         private static string AudioValue(AudioOpt a)
         {
-            switch (a) { case AudioOpt.PlayLocal: return "0"; case AudioOpt.PlayRemote: return "1"; case AudioOpt.None: return "2"; default: return null; }
+            switch (a) { case AudioOpt.PlayRemote: return "1"; case AudioOpt.None: return "2"; default: return "0"; }
         }
         private static string SecurityValue(SecurityOpt s)
         {

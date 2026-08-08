@@ -20,6 +20,10 @@ namespace Finestra.Core
     {
         private const string AppFolder = "Finestra";
         private const string LegacyAppFolder = "FinestraRDP";   // pre-1.0 folder name — migration SOURCE only
+        /// <summary>Written INTO the legacy folder once its contents have been migrated. It lives there,
+        /// not in the new folder, because deleting the new folder is precisely how a user asks for a
+        /// fresh start — a marker kept there would be erased by the very action it has to survive.</summary>
+        private const string MigratedMarker = ".migrated";
 
         private static string _dir;
 
@@ -34,6 +38,15 @@ namespace Finestra.Core
             get
             {
                 if (_dir != null) return _dir;
+                // PORTABLE wins outright: this copy's data lives with it, and no legacy migration runs
+                // (TryMigrateLegacy is not even reached, so a portable copy can never pull in Documents data).
+                var portable = PortableDir();
+                if (portable != null)
+                {
+                    _dir = portable;
+                    System.Diagnostics.Debug.WriteLine("[PATHS] data dir = " + _dir + "  (PORTABLE - sentinel beside the exe)");
+                    return _dir;
+                }
                 foreach (var root in CandidateRoots())
                 {
                     try
@@ -81,10 +94,41 @@ namespace Finestra.Core
             {
                 var oldDir = Path.Combine(root, LegacyAppFolder);
                 if (!Directory.Exists(oldDir)) return;
+
+                // ONE-TIME, and the record lives in the OLD folder on purpose.
+                //
+                // It cannot live in the new folder: deleting Documents\Finestra is exactly the action a
+                // user takes to start clean, and that would erase the record and re-arm the migration.
+                // That is the bug this fixes — the caller recomputes "is the new folder fresh?" on EVERY
+                // launch, so before this marker existed, every delete silently restored the legacy data
+                // and a fresh start was impossible while the old folder remained.
+                var marker = Path.Combine(oldDir, MigratedMarker);
+                if (File.Exists(marker)) return;
+
+                // NEVER OVERWRITE. Migration may only POPULATE AN EMPTY store. CopyTree already skips
+                // files that exist, but after a delete there is nothing left to skip - which is how a
+                // re-migration once replaced a NEWER connections.json with an older legacy one. Re-check
+                // here so the rule holds regardless of how the caller decided we were "fresh".
+                if (!IsEffectivelyEmpty(newDir)) return;
+
                 int copied = CopyTree(oldDir, newDir);
+
+                // Written whether or not anything was copied: the decision was made, and repeating it
+                // is what must not happen. Best-effort - a read-only old folder simply keeps migrating,
+                // which is the previous behaviour and no worse.
+                try
+                {
+                    File.WriteAllText(marker,
+                        "Finestra migrated this folder's contents to the current data folder." + Environment.NewLine +
+                        "Its presence stops that migration ever running again, so deleting the new" + Environment.NewLine +
+                        "data folder gives a genuinely fresh start. Delete this file to allow one" + Environment.NewLine +
+                        "more migration. This folder itself is left intact as your backup." + Environment.NewLine);
+                }
+                catch { }
+
                 if (copied > 0)
                     MigrationNote = "[PATHS] migrated " + copied + " file(s) from legacy \"" + oldDir
-                                  + "\" (old folder left intact as backup)";
+                                  + "\" (old folder left intact as backup; will not migrate again)";
             }
             catch { /* best-effort — a fresh start beats a crash at first touch */ }
         }
@@ -115,6 +159,40 @@ namespace Finestra.Core
             if (!string.IsNullOrEmpty(appdata)) yield return appdata;           // 2) %APPDATA% (unreliable on RT)
             try { exe = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location); } catch { }
             if (!string.IsNullOrEmpty(exe)) yield return exe;                   // 3) beside the exe
+        }
+
+        /// <summary>PORTABLE MODE. A file with this name beside the exe makes this copy keep ALL of its
+        /// data with it — connections, settings, known hosts, certificates and the log — instead of in
+        /// the shared per-user data directory. It touches nothing in Documents.
+        ///
+        /// It applies to EVERY data file, not just the log. An earlier version redirected only the log,
+        /// which satisfied nobody: an extracted zip still opened somebody else's connections, and was
+        /// never a fresh start. "Portable" means the folder is the whole of it.
+        ///
+        /// ⚠ CONSEQUENCE, and it is intended: a portable copy starts with ZERO connections. It does not
+        /// inherit the installed copy's profiles, and profiles made in it stay in it.
+        ///
+        /// INSTALLED copies deliberately do NOT carry this file, so they keep sharing Documents\Finestra
+        /// with each other — that is how a public and a private install see the same connections.
+        ///
+        /// Without the sentinel nothing changes. Any user can create one; it needs no content.</summary>
+        public const string PortableSentinel = "Finestra.portable";
+
+        /// <summary>The exe's own directory when this is a portable copy AND that directory is really
+        /// writable, otherwise null. The write probe matters — a bundle opened read-only (a network
+        /// share, a locked-down stick) must fall back to the shared dir rather than lose its data.</summary>
+        private static string PortableDir()
+        {
+            try
+            {
+                string exeDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+                if (string.IsNullOrEmpty(exeDir)) return null;
+                if (!File.Exists(Path.Combine(exeDir, PortableSentinel))) return null;
+                var probe = Path.Combine(exeDir, ".writeprobe");
+                try { File.WriteAllText(probe, "ok"); File.Delete(probe); return exeDir; }
+                catch { return null; }   // not writable — fall through to the normal candidates
+            }
+            catch { return null; }
         }
 
         public static string ConnectionsFile { get { return Path.Combine(AppDataDir, "connections.json"); } }

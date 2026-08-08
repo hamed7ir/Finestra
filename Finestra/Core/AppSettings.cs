@@ -5,7 +5,7 @@ using Newtonsoft.Json;
 namespace Finestra.Core
 {
     /// <summary>
-    /// App-level settings (NOT RDP flags) â€” theme mode + DPI awareness + the wfreerdp.exe path.
+    /// App-level settings (NOT RDP flags) — theme mode + DPI awareness + the wfreerdp.exe path.
     /// Load/Save is FILE-ONLY (Documents\Finestra\settings.json): Program.Main reads DpiUnaware/ThemeMode
     /// here BEFORE any window or Screen metric is touched, per the DPI invariant.
     /// </summary>
@@ -19,6 +19,11 @@ namespace Finestra.Core
         public bool   RunOnStartup { get; set; } = false;       // opt-in HKCU\...\Run key (starts minimized to tray)
         // FIN-KEYBOARD — touch-keyboard-aware layout (RT). Property initializer ⇒ a settings.json written
         // before 1.0.1 simply lacks the key and DEFAULTS TO TRUE, never throws (the B18 lesson).
+        /// <summary>Write Finestra.log? OFF by default: a shipped app should not quietly accumulate a
+        /// diagnostic file nobody asked for (one real install reached 731 KB). Turn it on when something
+        /// needs diagnosing. With it off no listener is attached and no log file is created at all.
+        /// DEBUG builds log regardless — see FileLog.Wanted().</summary>
+        public bool   EnableLogging { get; set; } = false;
         public bool   KeyboardAutoResize { get; set; } = true;  // give the touch keyboard room; off = escape hatch
         // FIN-KBD-FREEZE — diagnostic override: skip the "a hardware keyboard is attached" suppression, so a
         // SINGLE device trip can confirm whether that heuristic is the reason detection never fires. #if DEBUG

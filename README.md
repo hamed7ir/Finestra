@@ -9,6 +9,11 @@ x86 and x64** from one universal AnyCPU build. The RDP engine is a ported, modif
 bundled — `engine\x86\` ships with a short README explaining how to add one. Everything but RDP
 works without it.)*
 
+**Verified on hardware:** Windows RT 8.1 (ARM32, 1366×768 at 96 DPI) and Windows 10 ARM32
+(1920×1080 at 144 DPI) — RDP connect, drop and reconnect, audio output, and the touch-keyboard-aware
+layout were exercised on real devices on both. The remaining combinations run from the same AnyCPU
+build but have not been device-tested.
+
 <p align="center">
 <img width="1012" height="689" alt="manager" src="https://github.com/user-attachments/assets/c9a65e30-c8c4-4cf0-a31d-81371c11dff6" />
 <img width="1280" height="677" alt="session-tabs2" src="https://github.com/user-attachments/assets/ade51834-526a-4f88-b276-725e538fe440" />

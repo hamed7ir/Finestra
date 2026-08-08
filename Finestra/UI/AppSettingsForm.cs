@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -25,6 +25,7 @@ namespace Finestra.UI
         private readonly ChoiceRow _oversize;
         private readonly ChoiceRow _closeAction;
         private readonly ToggleRow _startup;
+        private readonly ToggleRow _logging;             // diagnostic log — OFF by default in Release
         private readonly ToggleRow _kbResize;            // FIN-KEYBOARD — the escape hatch (default on)
 #if DEBUG
         private readonly ToggleRow _kbIgnoreHw;          // FIN-KBD-FREEZE Part 2 — diagnostic-only, never in Release
@@ -80,6 +81,7 @@ namespace Finestra.UI
             // run-at-startup. The folder button opens the Documents\Finestra data dir in Explorer.
             _closeAction = new ChoiceRow("When I close the window", CloseActionOptions, (int)Startup.ParseCloseAction(s.CloseAction)) { ValueWidth = 200 };
             _startup = new ToggleRow("Run at Windows startup (starts minimized to tray)", s.RunOnStartup);
+            _logging = new ToggleRow("Write a diagnostic log (off by default)", s.EnableLogging);
             _kbResize = new ToggleRow("Make room for the touch keyboard (RT)", s.KeyboardAutoResize);
 #if DEBUG
             // FIN-KBD-FREEZE Part 2 — a single device trip both diagnoses AND confirms whether the
@@ -109,7 +111,7 @@ namespace Finestra.UI
                 new SectionHeader("wfreerdp"), _path, browse, autodetect,
                 new SectionHeader("Session"), _connectMode, connectHint,
                 new SectionHeader("Default resolution (new servers)"), _resPicker, _oversize,
-                new SectionHeader("App behaviour"), _closeAction, _startup, _kbResize,
+                new SectionHeader("App behaviour"), _closeAction, _startup, _logging, _kbResize,
             };
 #if DEBUG
             rows.Add(_kbIgnoreHw);
@@ -143,6 +145,7 @@ namespace Finestra.UI
             s.ConnectMode = _connectMode.SelectedIndex == 1 ? "Window" : "Embed";
             s.CloseAction = ((CloseAction)_closeAction.SelectedIndex).ToString();
             s.RunOnStartup = _startup.On;
+            s.EnableLogging = _logging.On;
             s.KeyboardAutoResize = _kbResize.On;
 #if DEBUG
             s.KeyboardIgnoreHardwareCheck = _kbIgnoreHw.On;
@@ -156,6 +159,7 @@ namespace Finestra.UI
             };
             s.Save();
             Startup.Apply(s.RunOnStartup);   // write/remove the HKCU Run key to match the setting
+            FileLog.Refresh();               // toggled on → the log opens now; off → it is closed and no file grows
             KeyboardInset.RefreshRunning();  // toggled off → the poller stops now; toggled on → next Register starts it
             WfreerdpChanged = !string.Equals(newPath, _origPath, StringComparison.OrdinalIgnoreCase);
             DialogResult = DialogResult.OK;

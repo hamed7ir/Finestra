@@ -320,6 +320,11 @@ namespace Finestra.Core
         private static string _warnedOverride;
         private static void WarnEngineOverride(string configured)
         {
+            // ⚠ Check the log FIRST, and latch only after a write that could actually land. Logging is off by
+            // default in Release, and FileLog.Line is a no-op with no listener - so latching first meant the
+            // one-shot was consumed by a silent call, and the user who then turns logging ON to find out why
+            // their engine is wrong would never see this line. Un-latched, it appears on the next connection.
+            if (!FileLog.IsEnabled) return;
             if (string.Equals(_warnedOverride, configured, StringComparison.OrdinalIgnoreCase)) return;
             _warnedOverride = configured;
             string ignored;

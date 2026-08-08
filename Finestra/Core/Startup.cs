@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using Finestra.Helpers;
@@ -50,12 +51,45 @@ namespace Finestra.Core
                         key.DeleteValue(LegacyValueName, throwOnMissingValue: false);
                     if (enabled)
                         key.SetValue(ValueName, "\"" + Application.ExecutablePath + "\" " + MinimizedArg);
-                    else if (key.GetValue(ValueName) != null)
+                    // ⚠ DELETE ONLY WHAT THIS EXE OWNS. There is ONE Run value name but there can be several
+                    // copies of Finestra, and since portable copies keep their own settings.json they no longer
+                    // agree about this setting. A freshly extracted portable copy has no settings file at all, so
+                    // RunOnStartup defaults to false and Program.cs calls Apply(false) on its first launch — which,
+                    // deleting blind, would silently disarm the INSTALLED copy's run-at-startup entry. Compare the
+                    // stored command line against our own path and leave anyone else's alone: a stale entry is
+                    // recoverable, another install's deleted entry is not.
+                    else if (OwnedByThisExe(key.GetValue(ValueName) as string))
                         key.DeleteValue(ValueName, throwOnMissingValue: false);
                 }
                 FileLog.Line("[STARTUP] run-on-startup " + (enabled ? "ENABLED" : "disabled"));
             }
             catch (Exception ex) { FileLog.Line("[STARTUP] apply failed: " + ex.Message); }
+        }
+
+        /// <summary>True when the stored Run command line launches THIS executable. The value is written quoted
+        /// ("C:\...\Finestra.exe" /tray), so strip quotes and compare the leading path rather than parsing a
+        /// command line. Anything unreadable, empty or different counts as NOT ours — the safe answer, because
+        /// it leaves the value alone.</summary>
+        private static bool OwnedByThisExe(string runValue)
+        {
+            if (string.IsNullOrEmpty(runValue)) return false;
+            try
+            {
+                string cmd = runValue.Trim();
+                if (cmd.StartsWith("\""))
+                {
+                    int end = cmd.IndexOf('"', 1);
+                    cmd = end > 0 ? cmd.Substring(1, end - 1) : cmd.Trim('"');
+                }
+                else
+                {
+                    int sp = cmd.IndexOf(' ');
+                    if (sp > 0) cmd = cmd.Substring(0, sp);
+                }
+                return string.Equals(Path.GetFullPath(cmd), Path.GetFullPath(Application.ExecutablePath),
+                                     StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
         }
 
         /// <summary>True if the Run value currently exists.</summary>

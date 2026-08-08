@@ -111,11 +111,23 @@ namespace Finestra.Core
                 // here so the rule holds regardless of how the caller decided we were "fresh".
                 if (!IsEffectivelyEmpty(newDir)) return;
 
-                int copied = CopyTree(oldDir, newDir);
+                int failed = 0;
+                int copied = CopyTree(oldDir, newDir, ref failed);
 
-                // Written whether or not anything was copied: the decision was made, and repeating it
-                // is what must not happen. Best-effort - a read-only old folder simply keeps migrating,
-                // which is the previous behaviour and no worse.
+                // ⚠ ONLY on a CLEAN run. The marker permanently disarms the migration, so writing it after a
+                // run that could not read some of the source would strand exactly the files that failed —
+                // silently, and for good, with the store already looking populated enough that the caller's
+                // "fresh" test never fires again. A locked or unreadable file (an antivirus scan, a copy still
+                // open in another process) is transient; leaving the marker unwritten simply retries next
+                // launch, and CopyTree skips what it already placed, so a retry is cheap and never overwrites.
+                // Zero copies with zero failures is still a clean run - an empty legacy folder is migrated.
+                if (failed > 0)
+                {
+                    MigrationNote = "[PATHS] migrated " + copied + " file(s) from legacy \"" + oldDir
+                                  + "\" but " + failed + " could not be read - NOT marking it done, so this retries next launch";
+                    return;
+                }
+
                 try
                 {
                     File.WriteAllText(marker,
@@ -133,7 +145,11 @@ namespace Finestra.Core
             catch { /* best-effort — a fresh start beats a crash at first touch */ }
         }
 
-        private static int CopyTree(string src, string dst)
+        /// <summary>Copies what is missing, never what already exists. Returns the number of files copied and
+        /// counts, via <paramref name="failed"/>, everything it could not read — the caller needs that to decide
+        /// whether the migration may be recorded as done. Keeps going on a failure rather than aborting: a
+        /// partial copy plus a retry next launch beats stopping at the first locked file.</summary>
+        private static int CopyTree(string src, string dst, ref int failed)
         {
             int n = 0;
             Directory.CreateDirectory(dst);
@@ -141,12 +157,13 @@ namespace Finestra.Core
             {
                 var name = Path.GetFileName(f);
                 if (string.Equals(name, ".writeprobe", StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.Equals(name, MigratedMarker, StringComparison.OrdinalIgnoreCase)) continue;   // our own bookkeeping
                 var to = Path.Combine(dst, name);
                 if (File.Exists(to)) continue;                  // never overwrite the new folder's data
-                try { File.Copy(f, to); n++; } catch { /* skip unreadable file, keep going */ }
+                try { File.Copy(f, to); n++; } catch { failed++; /* skip unreadable file, keep going */ }
             }
             foreach (var d in Directory.GetDirectories(src))
-                try { n += CopyTree(d, Path.Combine(dst, Path.GetFileName(d))); } catch { }
+                try { n += CopyTree(d, Path.Combine(dst, Path.GetFileName(d)), ref failed); } catch { failed++; }
             return n;
         }
 

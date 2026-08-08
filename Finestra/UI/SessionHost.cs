@@ -1032,10 +1032,12 @@ namespace Finestra.UI
         /// explanation is worse than a number the user can search for. Do not add a case from upstream
         /// documentation — an unmeasured mapping is exactly the assertion this bar has always refused to make.
         ///
-        /// ⚠ WIDTH: the bar's stats readout is a fixed 240px, right-aligned, drawn with NO EndEllipsis
-        /// (SessionTabBar.StatsW / its DrawText flags). An overflowing string loses its LEFT end — the status
-        /// dot goes first — so it fails silently and ugly. Every string here was MEASURED in the real font,
-        /// not estimated. Budget after "● disconnected · " is roughly 127px (~20 characters).</summary>
+        /// ⚠ WIDTH: the bar's stats readout is right-aligned in a rect of SessionTabBar.StatsW scaled by
+        /// DeviceDpi/96 — 240px at 96 DPI, 360px at 144 — and is drawn with EndEllipsis, so an overflowing
+        /// string now degrades at the RIGHT rather than losing its leading status dot. Every string here was
+        /// MEASURED in the real font, not estimated. Because the font scales with DPI too, the usable budget
+        /// after "● disconnected · " stays roughly 127px, i.e. about 20 characters, at any DPI. Ellipsis is a
+        /// safety net, not permission to lengthen these: measure before adding one.</summary>
         private static string DisconnectDetail(Session s)
         {
             // Our own diagnosis outranks any engine code: if we reaped a silent engine, that is the story.

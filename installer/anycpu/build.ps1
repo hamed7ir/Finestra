@@ -281,6 +281,48 @@ foreach ($f in 'LICENSE','THIRD-PARTY-NOTICES.txt','FREERDP-MODIFICATIONS.txt') 
 $readme = Join-Path $here 'README-BUNDLE.txt'
 if (Test-Path $readme) { Copy-Item $readme (Join-Path $stage 'README.txt') }
 
+# BUILD PROVENANCE — ties this artefact to the SOURCE COMMIT it was built from.
+#
+# The GPL source offer points at a repository; without this, matching a downloaded zip to a commit in
+# that repository is guesswork, and "this build contains fix X" is an assertion nobody can check. The
+# stamp goes INSIDE the bundle (so it travels with the artefact, not just with the console scrollback)
+# and is echoed to the console.
+#
+# ⚠ A DIRTY TREE IS RECORDED AS DIRTY, not silently ignored. An artefact built from uncommitted work is
+# exactly the one whose provenance cannot be reconstructed later, so it says so in the file. This is a
+# statement of fact, not a gate - the build still proceeds.
+$commit = 'unknown (git unavailable)'
+$treeState = ''
+try {
+    $c = (& git -C $root rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $c) {
+        $commit = $c.Trim()
+        $porcelain = (& git -C $root status --porcelain 2>$null)
+        $treeState = if ($porcelain) { "  ⚠ WORKING TREE WAS DIRTY - this artefact does NOT correspond to that commit alone" }
+                     else            { "  (working tree clean)" }
+    }
+} catch { }
+$engineLines = @()
+foreach ($a in $EnginePresent) {
+    $p = "$rel\engine\$a\wfreerdp.exe"
+    if (Test-Path $p) { $engineLines += ("  engine/{0,-4} {1}" -f $a, (Get-FileHash $p -Algorithm SHA256).Hash.ToLower()) }
+}
+Set-Content -Path (Join-Path $stage 'BUILD-INFO.txt') -Encoding utf8 -Value (@(
+  "Finestra $ver" + $(if ($AllowSpikeEngines) { '  [PRIVATE BUILD - DO NOT DISTRIBUTE]' } else { '' }),
+  '',
+  "source commit : $commit",
+  "tree          :$treeState",
+  "built (UTC)   : $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))",
+  "repository    : https://github.com/hamed7ir/Finestra",
+  '',
+  'Verify this artefact against its source:',
+  "  git clone https://github.com/hamed7ir/Finestra && git -C Finestra checkout $commit",
+  '',
+  'RDP engine binaries in this bundle (SHA-256), built from the FreeRDP fork branch',
+  'finestra-arm32-rt-3.28 at https://github.com/hamed7ir/FreeRDP :'
+) + $engineLines)
+Write-Host ("[build] provenance: commit {0}{1}" -f $commit, $treeState)
+
 New-Item $outdir -ItemType Directory -Force | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 

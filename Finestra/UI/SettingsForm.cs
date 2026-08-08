@@ -16,9 +16,11 @@ namespace Finestra.UI
     public sealed class SettingsForm : ThemedDialog
     {
         // option labels — SAME ORDER as the enums, so index == (int)enumValue
+        // ⚠ AudioOptions is the ONE exception (FIN-AUDIO-EXIT): its list is SHORTER than the enum, because
+        //   two members now behave identically. Map it with AudioIndex/AudioFromIndex — never with a cast.
         private static readonly string[] ColorDepthOptions = { "Default", "32-bit", "24-bit", "16-bit", "15-bit", "8-bit" };
         private static readonly string[] NetworkOptions = { "Default", "Modem", "Broadband (low)", "Broadband", "Broadband (high)", "WAN", "LAN", "Auto" };
-        private static readonly string[] AudioOptions = { "Default", "Play on this PC", "Play on server", "No audio" };
+        private static readonly string[] AudioOptions = { "Play on this PC", "Play on server", "No audio" };
         private static readonly string[] SecurityOptions = { "Default (negotiate)", "Force NLA", "NLA off", "TLS only", "RDP (legacy)" };
         private static readonly string[] CompressionLevelOptions = { "Default", "0", "1", "2" };
         private static readonly string[] GfxOptions = { "Default", "H.264 (AVC444)", "H.264 (AVC420)", "RemoteFX", "Progressive" };
@@ -67,7 +69,7 @@ namespace Finestra.UI
             var gateway = TextField("RD Gateway host (optional)", _s.GatewayHost, v => _s.GatewayHost = v);
 
             // ── Local resources ──
-            var audio = Choice("Audio", AudioOptions, (int)_s.Audio, i => _s.Audio = (AudioOpt)i);
+            var audio = Choice("Audio", AudioOptions, AudioIndex(_s.Audio), i => _s.Audio = AudioFromIndex(i, _s.Audio));
             var clipboard = Toggle("Clipboard", _s.Clipboard, v => _s.Clipboard = v);
             var drives = Toggle("Redirect drives", _s.Drives, v => _s.Drives = v);
             var printer = Toggle("Redirect default printer", _s.Printer, v => _s.Printer = v);
@@ -148,6 +150,24 @@ namespace Finestra.UI
             var r = new ChoiceRow(label, opts, idx);
             r.Changed += () => set(r.SelectedIndex);
             return r;
+        }
+        // FIN-AUDIO-EXIT — AudioOpt.Default and AudioOpt.PlayLocal now emit the SAME switch (/audio-mode:0),
+        // so the dropdown collapses them into one row: three choices, none of which silently means "no sound".
+        // Both enum members survive for wire compatibility — a stored "PlayLocal" still loads here, and
+        // AudioFromIndex round-trips it UNCHANGED, so merely opening this dialog never rewrites connections.json.
+        private static int AudioIndex(AudioOpt a)
+        {
+            switch (a) { case AudioOpt.PlayRemote: return 1; case AudioOpt.None: return 2; default: return 0; }
+        }
+        private static AudioOpt AudioFromIndex(int i, AudioOpt current)
+        {
+            switch (i)
+            {
+                case 1: return AudioOpt.PlayRemote;
+                case 2: return AudioOpt.None;
+                // index 0 covers Default AND PlayLocal — keep whichever this profile already had.
+                default: return current == AudioOpt.PlayLocal ? AudioOpt.PlayLocal : AudioOpt.Default;
+            }
         }
         private static TextRow TextField(string label, string val, Action<string> set)
         {

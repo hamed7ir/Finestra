@@ -59,8 +59,11 @@ lift the one from the [1.0.2 release](https://github.com/hamed7ir/Finestra/relea
 - **Windows RT 8.1**: a jailbroken device (RT only runs unsigned desktop apps after jailbreak).
 - Binaries are **unsigned** — SmartScreen will warn on first run (*More info → Run anyway*).
 
-Your data (connections, host keys, certificates, settings) lives in **`Documents\Finestra\`** —
-it survives upgrades and uninstalls.
+**Installed** copies keep your data (connections, host keys, certificates, settings) in
+**`Documents\Finestra\`**, shared between installed copies and surviving upgrades and uninstalls.
+The **portable** download instead ships a `Finestra.portable` file beside the exe, which keeps
+everything in that folder — so a portable copy starts with no connections, does not see an
+installed copy's profiles, and takes its own with it. Delete that file to use the shared location.
 
 ## Known limitations (1.0)
 

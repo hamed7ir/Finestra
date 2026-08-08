@@ -67,9 +67,14 @@ if (-not $OutputRoot) {
 }
 $OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
 if ($AllowSpikeEngines) {
+    # Compare SLASH-TERMINATED on BOTH sides. GetFullPath never appends a separator, so testing the raw
+    # $OutputRoot against 'D:\repo\finestra\' was a strict proper-descendant test: it caught
+    # 'D:\repo\finestra\release\priv' but MISSED the repository root itself, which is the one path most
+    # likely to be typed by accident and the worst place for a private artefact to land.
     $repoFull = [System.IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
-    if ($OutputRoot.StartsWith($repoFull, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw ("Refusing to write a PRIVATE build inside the repository: '$OutputRoot' is under '$root'. " +
+    $outFull  = $OutputRoot.TrimEnd('\') + '\'
+    if ($outFull.StartsWith($repoFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw ("Refusing to write a PRIVATE build inside the repository: '$OutputRoot' is at or under '$root'. " +
                "Choose a root outside it.")
     }
 }
@@ -302,10 +307,14 @@ if (Test-Path $payload) { Remove-Item $payload -Force }
 Set-Content -Path (Join-Path $stage 'Finestra.portable') -Encoding ascii -Value @(
   'This file makes Finestra PORTABLE: it keeps ALL of its data in this folder -',
   'connections, settings, known hosts, certificates and the log - instead of in',
-  'your Documents folder. Nothing outside this folder is read or written.',
+  'your Documents folder.',
   '',
   'So this copy starts with NO connections, and any you create here stay here.',
   'That is the point: extract it anywhere, carry it, delete the folder to remove it.',
+  '',
+  'One exception, and it is opt-in: "Run at Windows startup" is a Windows setting,',
+  'not a file, so turning it on writes an entry outside this folder that points at',
+  'this exe. Leave it off and nothing outside this folder is written.',
   '',
   'Delete this file to make this copy use the shared Documents\Finestra data instead.')
 Write-Host "[build] portable sentinel written into the PORTABLE bundle only (installer payload has none)"

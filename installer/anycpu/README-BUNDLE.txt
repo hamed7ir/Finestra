@@ -10,11 +10,24 @@ Requirements
 - Windows RT requires a jailbroken device (unsigned desktop apps).
 - The binaries are unsigned — SmartScreen will warn on first run (More info → Run anyway).
 
-Running (portable)
-------------------
+Running
+-------
 Extract this folder anywhere and run Finestra.exe. Nothing is registered; delete the
-folder to remove it. Your data (connections, host keys, certificates, settings) lives
-in Documents\Finestra — never beside the exe.
+folder to remove it.
+
+Where your data (connections, host keys, certificates, settings) is kept depends on one
+file, Finestra.portable, sitting next to Finestra.exe:
+
+  - PRESENT  — this is a portable copy. Everything stays in this folder and nothing
+               outside it is read or written, so the copy starts with NO connections and
+               any you create travel with the folder. The portable download ships this
+               file; read it for the details.
+  - ABSENT   — the installed layout. Data lives in Documents\Finestra, shared with every
+               other installed copy, and it survives upgrades and uninstalls.
+
+Delete Finestra.portable to switch a portable copy over to the shared Documents location.
+Note that "run at Windows startup", if you turn it on, is a Windows setting rather than a
+file, so it is the one thing that lives outside the folder either way.
 
 The RDP engine (wfreerdp.exe, a modified FreeRDP 3.28.0 build) is picked automatically to
 match your machine: engine\x64 on 64-bit Windows, engine\arm on Windows RT 8.1 and on

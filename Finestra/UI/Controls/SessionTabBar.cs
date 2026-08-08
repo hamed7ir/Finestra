@@ -50,7 +50,10 @@ namespace Finestra.UI.Controls
         private const int StatsW = 240;
         private const int TabW = 210;
         private const int AddW = 40;
-        private const int ReconW = 122;   // FRDP-RECONNECT — the Reconnect button (SSH/FTP have no pause, so this slot is free)
+        private const int ReconW = 140;   // FRDP-RECONNECT — the Reconnect button (SSH/FTP have no pause, so this slot is free).
+                                          // Widened from 122: "⟳  Reconnect" did not fit its 116px inner rect
+                                          // and was being ellipsized inside its own button.
+        private const int StatsGap = 12;  // breathing room between the stats readout and the control to its right
 
         public event Action<int> TabClicked;
         public event Action<int> TabCloseClicked;
@@ -124,8 +127,20 @@ namespace Finestra.UI.Controls
             _fsRect = new Rectangle(Width - 4 * BtnW, 0, BtnW, BarHeight);
             _pauseRect = new Rectangle(Width - 5 * BtnW, 0, BtnW, BarHeight);
             _reconnectRect = new Rectangle(_fsRect.Left - ReconW, 5, ReconW - 6, BarHeight - 10);   // FRDP-RECONNECT — left of FS (the free SSH/FTP pause slot)
-            int statsRight = _reconVisible ? _reconnectRect.Left : _pauseRect.Left;
-            _statsRect = new Rectangle(statsRight - StatsW, 0, StatsW, BarHeight);
+            // The readout must not run into whatever sits to its right. Its right edge was previously the
+            // NEXT CONTROL'S LEFT EDGE EXACTLY - zero gap - so a full-width status string ended flush
+            // against the Reconnect button and the two read as one run of text. Right-aligned text also
+            // has no trailing bearing to soften that. Keep a real gap.
+            //
+            // And SCALE THE BUDGET WITH DPI: StatsW is a PIXEL constant while the font is in POINTS, so at
+            // 144 DPI the same text is half again as wide with no extra room. Measured at 144: the ordinary
+            // live readout "rtt 388 ms · 100.0 Mbps · jit 12" needs 277px and the longest disconnect string
+            // 294px, both against a flat 240px - so the EVERYDAY case truncated, not just an edge case.
+            int statsW = StatsW, gap = StatsGap;
+            try { double s = DeviceDpi / 96.0; statsW = (int)Math.Round(StatsW * s); gap = (int)Math.Round(StatsGap * s); }
+            catch { /* pre-4.7 or no handle yet - the unscaled constants still render, just tighter */ }
+            int statsRight = (_reconVisible ? _reconnectRect.Left : _pauseRect.Left) - gap;
+            _statsRect = new Rectangle(statsRight - statsW, 0, statsW, BarHeight);
 
             var tabs = new List<Rectangle>();
             var closes = new List<Rectangle>();
@@ -188,9 +203,21 @@ namespace Finestra.UI.Controls
             }
 
             // live stats readout (rtt · bandwidth · jitter, from the wfreerdp autodetect pipe)
+            //
+            // ⚠ EndEllipsis is LOAD-BEARING, not cosmetic. This rect is a fixed StatsW px wide while the
+            // font is in POINTS, so it scales with DPI and the rect does not: a string that fits at 96 DPI
+            // can be half as wide again at 144. Right-aligned text that overruns its rect is clipped at the
+            // LEFT, which silently eats the leading status dot and the first word - the reader loses
+            // "● disconnected" and keeps the tail. With EndEllipsis it degrades at the right instead and
+            // the dot always survives. Do not remove this flag; widen StatsW if more text is needed.
+            //
+            // (The Reconnect button does NOT overlap this rect - Recalc anchors _statsRect's right edge to
+            // _reconnectRect.Left when the button is visible, so the two are disjoint by construction. The
+            // cost of the button is that the tabs get less room, not that the readout does.)
             using (var f = FontHelper.Ui(9.5f, FontStyle.Bold))
                 TextRenderer.DrawText(g, _stats, f, _statsRect, Color.White,
-                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix
+                    | TextFormatFlags.EndEllipsis);
 
             if (_reconVisible) DrawReconnect(g, accent);   // FRDP-RECONNECT — the active dropped SSH/FTP tab
             if (_pauseVisible) DrawPause(g, _pauseRect, _paused);   // hidden for SSH tabs (no suppress-output)

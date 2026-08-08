@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 //  Finestra AnyCPU installer  (Setup.cs)
 //
 //  A .NET Framework 4.7 AnyCPU/MSIL installer, so it RUNS ON WINDOWS RT 8.1 (ARM32)
@@ -40,13 +40,34 @@ namespace FinestraSetup
 {
     internal static class Program
     {
+        // PRODUCT IDENTITY. Everything user-visible, and everything that decides WHERE this installer
+        // writes, derives from the four consts below: the install directory (DefaultDir), the Start-menu
+        // and desktop shortcut filenames, the HKCU uninstall key, the wizard title and its messages.
+        //
+        // A PRIVATE build is a SEPARATE PRODUCT, not a variant of the public one. This installer WIPES
+        // its target directory (Installer.TryDeleteDir) and DELETES its uninstall key, so if the two
+        // shared an identity a private install would silently replace the public app, and uninstalling
+        // either would take the other with it. Diverging the identity here makes that impossible by
+        // construction: different folder, different shortcut, different Add/Remove entry. Nothing else
+        // in this file needs to know which variant it is.
+        //
+        // DELIBERATELY NOT gated: the pre-1.0 "FinestraRDP" Run-value cleanup further down. That literal
+        // is a compatibility contract with existing installs and must never be renamed or duplicated.
+#if PRIVATE_BUILD
+        internal const string AppName = "Finestra (Private)";
+        internal const string InstallFolderName = "Finestra-Private";
+        internal const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Finestra-Private";
+        internal const string ShortcutDesc = "Finestra (Private) - Remote Connection Manager";
+#else
         internal const string AppName = "Finestra";
-        internal const string AppVersion = "1.0.2";
+        internal const string InstallFolderName = "Finestra";
+        internal const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Finestra";
+        internal const string ShortcutDesc = "Finestra - Remote Connection Manager";
+#endif
+        internal const string AppVersion = "1.0.3";
         internal const string Publisher = "Hamed Ghorbani";
         internal const string ExeName = "Finestra.exe";
         internal const string PayloadName = "payload.zip";
-        internal const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Finestra";
-        internal const string ShortcutDesc = "Finestra - Remote Connection Manager";
 
         [STAThread]
         private static int Main(string[] args)
@@ -92,7 +113,7 @@ namespace FinestraSetup
         internal static string DefaultDir()
         {
             string p = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            return Path.Combine(p, "Programs", AppName);
+            return Path.Combine(p, "Programs", InstallFolderName);   // folder-safe name, not the display name
         }
     }
 
@@ -231,7 +252,7 @@ namespace FinestraSetup
             RemoveShortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), Program.AppName + ".lnk"));
             RemoveShortcut(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), Program.AppName + ".lnk"));
             try { Registry.CurrentUser.DeleteSubKeyTree(Program.UninstallKey, false); } catch { }
-            RemoveAppGeneratedState();
+            RemoveAppGeneratedState(dir);
             SelfDeleteDir(dir);   // remove the install dir last (uninstall.exe runs from inside it)
             return true;
         }
@@ -239,7 +260,7 @@ namespace FinestraSetup
         // POLICY: PRESERVE the user's data — Documents\Finestra (connections.json, known_hosts.json,
         // known_certs.json, settings.json, logs) is NEVER touched by uninstall. Remove only clearly
         // app-generated, disposable machine state.
-        private static void RemoveAppGeneratedState()
+        private static void RemoveAppGeneratedState(string dir)
         {
             // Run-on-startup HKCU Run values — they point at the exe we're deleting, so leaving them is a
             // broken startup entry. (The app's own toggle created them; this is the matching cleanup.)
@@ -247,11 +268,35 @@ namespace FinestraSetup
             {
                 using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true))
                 {
-                    if (k != null && k.GetValue("Finestra") != null) k.DeleteValue("Finestra", false);
-                    if (k != null && k.GetValue("FinestraRDP") != null) k.DeleteValue("FinestraRDP", false);   // pre-1.0 name
+                    // NOTE: these VALUE NAMES are fixed literals, not derived from AppName - the app writes
+                    // the same "Finestra" value whichever build created it. So when more than one install
+                    // exists, only ONE of them owns the value, and deleting it blind would let uninstalling
+                    // one build silently disable another build's run-at-startup. Delete only when the
+                    // value's DATA points INSIDE the directory being removed.
+                    if (k == null) return;
+                    if (OwnedByThisInstall(k.GetValue("Finestra") as string, dir)) k.DeleteValue("Finestra", false);
+                    // pre-1.0 name - same ownership test. This literal is a compatibility contract with
+                    // pre-1.0 installs and must never be renamed.
+                    if (OwnedByThisInstall(k.GetValue("FinestraRDP") as string, dir)) k.DeleteValue("FinestraRDP", false);
                 }
             }
             catch { }
+        }
+
+        /// <summary>True when a Run value's command line points at an exe inside <paramref name="dir"/>.
+        /// The stored value is usually quoted ("C:\...\Finestra.exe"), so compare on a trimmed prefix
+        /// rather than parsing a command line. Unreadable or empty data counts as NOT ours: leaving a
+        /// stale entry behind is recoverable, deleting another install's is not.</summary>
+        private static bool OwnedByThisInstall(string runValue, string dir)
+        {
+            if (string.IsNullOrEmpty(runValue) || string.IsNullOrEmpty(dir)) return false;
+            try
+            {
+                string cmd = runValue.Trim().Trim('"');
+                string full = Path.GetFullPath(dir).TrimEnd('\\') + "\\";
+                return cmd.StartsWith(full, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
         }
 
         private static void RemoveShortcut(string lnk) { try { if (File.Exists(lnk)) File.Delete(lnk); } catch { } }
@@ -353,7 +398,7 @@ namespace FinestraSetup
             var lbl = new Label { Left = 18, Top = 88, Width = 444, Height = 18, Text = "Install location (per-user, no admin needed):" };
             _path = new TextBox { Left = 18, Top = 110, Width = 350, Text = Program.DefaultDir() };
             _browse = new Button { Left = 378, Top = 108, Width = 84, Height = 26, Text = "Browse..." };
-            _browse.Click += (s, e) => { using (var d = new FolderBrowserDialog()) { try { d.SelectedPath = _path.Text; } catch { } if (d.ShowDialog(this) == DialogResult.OK) _path.Text = Path.Combine(d.SelectedPath, Program.AppName); } };
+            _browse.Click += (s, e) => { using (var d = new FolderBrowserDialog()) { try { d.SelectedPath = _path.Text; } catch { } if (d.ShowDialog(this) == DialogResult.OK) _path.Text = Path.Combine(d.SelectedPath, Program.InstallFolderName); } };
             _desktop = new CheckBox { Left = 18, Top = 148, Width = 300, Text = "Create a desktop shortcut", Checked = true };
             _status = new Label { Left = 18, Top = 194, Width = 444, Height = 18, ForeColor = Color.Gray, Text = "" };
             _bar = new ProgressBar { Left = 18, Top = 216, Width = 444, Height = 14, Style = ProgressBarStyle.Marquee, Visible = false, MarqueeAnimationSpeed = 30 };

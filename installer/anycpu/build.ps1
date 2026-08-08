@@ -7,7 +7,7 @@
 #  like the app - so it runs on RT AND x86/x64. Run this AFTER building Release AND
 #  after staging the release engines into bin\Release\engine\{x64,x86,arm}.
 #
-#  Produces (installer\Output\):
+#  Produces (all under the OUTPUT ROOT - see -OutputRoot; public defaults to release\public\):
 #    anycpu\Setup.exe + anycpu\payload.zip       (must travel together)
 #    Finestra-Setup-<version>.zip                 (ship: extract, run Setup.exe)
 #    Finestra-<version>-portable.zip              (ship: extract anywhere, run Finestra.exe)
@@ -15,29 +15,68 @@
 # =============================================================================
 # PRIVATE packaging opt-in — the ONLY way past the engine provenance guard below.
 #
-# NAMED FOR THE GUARD, NOT FOR ONE FEATURE. The guard detects spike code in general: the windowed
-# Windows-key hook (GetAsyncKeyState) as well as the Media Foundation camera backend (mfplat /
-# mfreadwrite imports), and anything else added to it later. A switch called -PrivateCameraBuild
-# would have implied camera was the only thing it let through, which is wrong and would age badly.
+# THE RULE: a RELEASE engine is built from the publication branch finestra-arm32-rt-3.28, which carries
+# exactly four source modifications over FreeRDP 3.28.0 and nothing else. The development tree carries
+# additional, unreleased work on top of that. An engine built from the development tree is therefore not
+# a release engine, however it was labelled -- so the guard below identifies one by what survives
+# compilation and refuses it.
 #
-# It is a named switch on purpose -- an environment variable can be left set from a previous shell
-# and silently taint the next build, which is exactly how a spike engine would eventually ship. It
+# NAMED FOR THE GUARD, NOT FOR ONE PIECE OF WORK. It is deliberately not named after whatever happens to
+# be in the development tree today; that list changes, and a switch named for one item would age badly.
+#
+# It is a named switch on purpose -- an environment variable can be left set from a previous shell and
+# silently taint the next build, which is exactly how an unreleased engine would eventually ship. It
 # must be typed, per invocation, by someone who means it.
 #   .\build.ps1 -AllowSpikeEngines
-# With it: a spike-carrying engine is allowed through, the artefacts are renamed so they cannot be
-# mistaken for a release, and a PRIVATE-DO-NOT-DISTRIBUTE marker is written beside them.
+# With it: such an engine is allowed through, the artefacts and their checksum file are renamed so they
+# cannot be mistaken for a release, Setup.exe is compiled as a separate product (see PRIVATE_BUILD in
+# Setup.cs), and a PRIVATE-DO-NOT-DISTRIBUTE marker is written beside them.
 # Without it: behaviour is EXACTLY as before -- the guard still refuses.
-#
-# The camera / rdpecam feature is PRIVATE: not published, not released. This switch is how a private
-# build is made deliberately, and the renaming + marker are how its output stays distinguishable.
-param([switch]$AllowSpikeEngines)
+param(
+    [switch]$AllowSpikeEngines,
+    # Where EVERYTHING this script produces goes - intermediates and artefacts alike. See below.
+    [string]$OutputRoot
+)
 
 $ErrorActionPreference = 'Stop'
 $root   = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # repo root (...\Finestra)
 $rel    = Join-Path $root 'Finestra\bin\Release'
 $icon   = Join-Path $root 'Finestra.ico'
 $here   = $PSScriptRoot
-$outdir = Join-Path $root 'installer\Output\anycpu'
+# SEPARATE OUTPUT ROOTS ---------------------------------------------------------------------------
+# Public and private builds no longer share a directory. EVERY intermediate and EVERY artefact lands
+# under its own root, so a name collision between the two flavours is not possible rather than
+# individually prevented. SHA256SUMS.txt and anycpu\payload.zip were two instances of that one class:
+# each was renamed after it bit, which is a treadmill. Two roots ends it.
+#
+# The PRIVATE root must be OUTSIDE this repository, and that is ENFORCED below, not merely advised.
+# Private artefacts have twice had to be moved out by hand after landing in the repo's output folder;
+# an ignore rule keeps them out of the index but not out of the working tree, and "remember to move
+# them" is not a control. There is deliberately no default private path here - a public file should not
+# name one - so a private build must say where its output goes, via -OutputRoot or FINESTRA_PRIVATE_OUT.
+if (-not $OutputRoot) {
+    if ($AllowSpikeEngines) {
+        $OutputRoot = $env:FINESTRA_PRIVATE_OUT
+        if (-not $OutputRoot) {
+            throw ("A PRIVATE build needs an output root OUTSIDE this repository. Pass -OutputRoot <path>, " +
+                   "or set FINESTRA_PRIVATE_OUT. (Private artefacts must not be written into the repo, " +
+                   "even where .gitignore would hide them.)")
+        }
+    }
+    else { $OutputRoot = Join-Path $root 'release\public' }
+}
+$OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
+if ($AllowSpikeEngines) {
+    $repoFull = [System.IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+    if ($OutputRoot.StartsWith($repoFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw ("Refusing to write a PRIVATE build inside the repository: '$OutputRoot' is under '$root'. " +
+               "Choose a root outside it.")
+    }
+}
+New-Item $OutputRoot -ItemType Directory -Force | Out-Null
+Write-Host ("[build] output root = {0}  ({1})" -f $OutputRoot, $(if ($AllowSpikeEngines) { 'PRIVATE' } else { 'public' }))
+
+$outdir = Join-Path $OutputRoot 'anycpu'
 
 if (-not (Test-Path "$rel\Finestra.exe")) { throw "Build Release first: '$rel\Finestra.exe' not found." }
 if (-not (Test-Path $icon))               { throw "App icon not found: '$icon'." }
@@ -46,10 +85,22 @@ if (-not (Test-Path $icon))               { throw "App icon not found: '$icon'."
 # folder carrying only a README that explains how to supply one. These loops assert an EXPECTED SET
 # instead of iterating whatever happens to be on disk: a loop over "what is present" silently passes
 # when something is missing, and this project has already shipped one guard that could not fire
-# (the FIN-RDP-WINV comment marker, stripped at compile time - see NOTES-carried M1).
+# (a source-comment marker, stripped at compile time - see NOTES-carried M1).
 $EngineRequired = @('x64','arm')
 $EngineOptional = @('x86')
 $EngineKnown    = $EngineRequired + $EngineOptional
+
+# FIN-PRIVATE-CAM — a PRIVATE build has a NARROWER expected set, not a relaxed one. Spike features are
+# x64-only by design, so an ARM slot in a private bundle is meaningless: the only engine that could sit
+# there is a PUBLIC one, riding inside an artefact named DO-NOT-DISTRIBUTE. That is a distribution
+# hazard, so in spike mode x64 becomes the only REQUIRED arch and arm is FORBIDDEN outright.
+# This tightens the rule and changes nothing on the public path below.
+if ($AllowSpikeEngines) {
+    $EngineRequired = @('x64')
+    if (Test-Path "$rel\engine\arm\wfreerdp.exe") {
+        throw "PRIVATE build: an ARM engine is staged at '$rel\engine\arm\wfreerdp.exe'. Private/spike builds are x64-ONLY - unstage it before packaging."
+    }
+}
 
 foreach ($a in $EngineRequired) {
     if (-not (Test-Path "$rel\engine\$a\wfreerdp.exe")) {
@@ -70,61 +121,120 @@ Write-Host ("[build] engines: required {0} OK; binaries present {1}{2}" -f ($Eng
 
 $spikeEngines = @()
 # ENGINE PROVENANCE GUARD -----------------------------------------------------------------------
-# The development engine tree carries spike code that must never reach a release: the windowed
-# Windows-key passthrough and the Media Foundation camera backend. Both are deliberately excluded
-# from the publication branch, so an engine built from the development tree would ship them
-# silently. Detect them by what actually survives compilation - a source comment does not, so a
-# marker like FIN-RDP-WINV is absent from the binary in both ASCII and UTF-16 and cannot be used.
-#   WinV   : the hook is the only caller of GetAsyncKeyState in this client (verified: 1 hit in a
-#            WinV build, 0 in the shipped 1.0.2 engines).
-#   camera : the Media Foundation backend pulls in mfplat / mfreadwrite imports.
+# A release engine comes from the publication branch finestra-arm32-rt-3.28. The development tree
+# carries unreleased work on top of that branch, so an engine built there would ship it silently.
+#
+# Identify one by what SURVIVES COMPILATION, not by anything written in source: a comment marker does
+# not reach the binary at all, in either ASCII or UTF-16 (see NOTES-carried M1), so the only reliable
+# evidence is imported API names and called entry points.
+# Two independent signatures, neither present in an engine built from the publication branch:
+#   - GetAsyncKeyState : this client has no other caller (1 hit in a development build, 0 in every
+#                        shipped engine, verified in 1.0.2 and 1.0.3).
+#   - mfplat / mfreadwrite : Media Foundation is not linked by the publication branch's build.
+# Either one means "not built from the publication branch". Add a signature here when the development
+# tree gains work with its own compiled fingerprint.
+#
+# ⚠ TWO DISCRIMINATORS, NOT INTERCHANGEABLE. Use the right one for what you are inspecting:
+#     SOURCE REFS (a branch, a tree)  -> presence of the backend's own source DIRECTORY
+#     BUILT BINARIES (what is below)  -> the mfplat / mfreadwrite strings
+#   Do NOT scan a source ref for mfplat. Upstream's own libfreerdp/codec/h264_mf.c contains it, so
+#   every ref descended from 3.28.0 matches and the scan reads as "everything is contaminated".
+#
+# ⚠ AND THIS SCAN HAS A BUILD-CONFIG DEPENDENCY. It is only sound while the pinned configuration
+#   leaves Media Foundation OUT of the engine. The gate is NOT WITH_OPENH264 - it is:
+#       libfreerdp/codec/CMakeLists.txt:  if(WIN32 AND WITH_MEDIA_FOUNDATION) ... h264_mf.c
+#   If WITH_MEDIA_FOUNDATION is ever turned ON for a legitimate public engine, h264_mf.c compiles in,
+#   its LoadLibraryA("mfplat.dll") puts that string in the binary, and THIS GUARD WOULD REFUSE A
+#   PERFECTLY GOOD RELEASE ENGINE. If that day comes, do not weaken the guard - sharpen it (below).
+#
+#   TWO SHARPER FORMS, recorded but deliberately not implemented here:
+#     1. Drop 'mfplat.dll' and keep ONLY 'mfreadwrite.dll'. Upstream never references mfreadwrite - all
+#        12 mfplat/mfreadwrite hits on the publication branch are mfplat, in h264_mf.c - so mfreadwrite
+#        alone separates the two cases with a one-word change.
+#     2. Read the PE IMPORT TABLE rather than scanning strings. The cases differ exactly there:
+#          h264_mf.c (upstream)  : LoadLibraryA("mfplat.dll")  -> a string, NO import-table entry
+#          camera backend (ours) : CMake links mfplat/mf/mfreadwrite/mfuuid -> REAL import entries
+#   Either survives WITH_MEDIA_FOUNDATION=ON. Left as a two-string scan for now because it is simple
+#   and the pinned config keeps it correct; this note is the trigger to change that.
+#
+# ⚠ AND NOTE WHERE THE 'OFF' ACTUALLY COMES FROM. Three of the four shipping recipes pass
+#   -DWITH_MEDIA_FOUNDATION=OFF explicitly; port\x64-rig-configure.bat passes NEITHER flag and relies
+#   purely on the CMake default (cmake/ConfigOptions.cmake declares it OFF). A default is a weaker
+#   guarantee than an explicit flag - if an upstream bump ever changes it, that recipe changes silently.
 foreach ($a in $EnginePresent) {
     $engPath = "$rel\engine\$a\wfreerdp.exe"
     $bytes   = [System.IO.File]::ReadAllBytes($engPath)
     $ascii   = [System.Text.Encoding]::ASCII.GetString($bytes)
     $wide    = [System.Text.Encoding]::Unicode.GetString($bytes)     # a marker may be UTF-16
-    $hasWinV = $ascii.Contains('GetAsyncKeyState') -or $wide.Contains('GetAsyncKeyState')
-    $hasCam  = $false
+    $sig = @()
+    if ($ascii.Contains('GetAsyncKeyState') -or $wide.Contains('GetAsyncKeyState')) { $sig += 'GetAsyncKeyState' }
     foreach ($mf in 'mfplat.dll','mfreadwrite.dll') {
-        if ($ascii.ToLower().Contains($mf) -or $wide.ToLower().Contains($mf)) { $hasCam = $true }
+        if ($ascii.ToLower().Contains($mf) -or $wide.ToLower().Contains($mf)) { $sig += $mf }
     }
-    if ($hasWinV -or $hasCam) {
+    if ($sig.Count -gt 0) {
         # -AllowSpikeEngines is the ONLY bypass, and it is loud: the artefacts get renamed and marked.
         if (-not $AllowSpikeEngines) {
-            $what = @(); if ($hasWinV) { $what += 'the windowed Windows-key (WinV) spike' }; if ($hasCam) { $what += 'the camera spike (mfplat/mfreadwrite)' }
-            throw "Engine '$a' carries $($what -join ' and '). Build release engines from the publication branch (finestra-arm32-rt-3.28), not the development tree. If this is a deliberate PRIVATE build, re-run with -AllowSpikeEngines."
+            throw "Engine '$a' is not built from the publication branch - it carries $($sig -join ', '), which finestra-arm32-rt-3.28 does not. Build release engines from that branch, not the development tree. If this is a deliberate PRIVATE build, re-run with -AllowSpikeEngines."
         }
         $spikeEngines += $a
-        Write-Host ("[build] PRIVATE: engine '{0}' carries {1} - allowed by -AllowSpikeEngines" -f $a, $(if ($hasCam -and $hasWinV) { 'camera + WinV' } elseif ($hasCam) { 'camera' } else { 'WinV' }))
+        Write-Host ("[build] PRIVATE: engine '{0}' is not from the publication branch ({1}) - allowed by -AllowSpikeEngines" -f $a, ($sig -join ', '))
     }
 }
 if ($AllowSpikeEngines -and $spikeEngines.Count -eq 0) {
-    Write-Host "[build] PRIVATE: -AllowSpikeEngines was given but no staged engine carries a spike - output is still marked private."
+    Write-Host "[build] PRIVATE: -AllowSpikeEngines was given but every staged engine looks publication-branch clean - output is still marked private."
 }
 if (-not $AllowSpikeEngines) {
-    Write-Host ("[build] engine provenance guard: {0} clean (no WinV hook, no camera spike)" -f ($EnginePresent -join '/'))
+    Write-Host ("[build] engine provenance guard: {0} clean (publication-branch signatures only)" -f ($EnginePresent -join '/'))
 }
 
 foreach ($f in 'LICENSE','THIRD-PARTY-NOTICES.txt','FREERDP-MODIFICATIONS.txt') {
     if (-not (Test-Path (Join-Path $root $f))) { throw "Legal file missing at repo root: $f" }
 }
 
-# Version tracks the BUILT assembly so the distributable names never go stale.
-$ver = [System.Diagnostics.FileVersionInfo]::GetVersionInfo("$rel\Finestra.exe").FileVersion   # e.g. 1.0.0.0
-$ver = (($ver -split '\.')[0..2]) -join '.'                                                    # -> 1.0.0
-
 # GUARD: Setup.cs's AppVersion const is what the wizard displays and what lands in the uninstall
 # registry as DisplayVersion, and it does NOT track AssemblyInfo.cs. Historically it silently drifted
 # (the shipped 1.0.2 installer was built from a Setup.cs whose committed copy still said 1.0.0), so a
 # mismatch is now a hard build failure rather than something you notice after publishing.
+#
+# FIN-1.0.3 — WIDENED. Rail R5 is FOUR edits across TWO files, because AssemblyInfo.cs carries THREE
+# INDEPENDENT version attributes and Setup.cs a fourth const. This guard previously compared only
+# AssemblyFileVersion, so the other two could drift unnoticed:
+#   AssemblyVersion              - the managed identity version used for assembly binding
+#   AssemblyFileVersion          - what Explorer shows, and what names the distributables below
+#   AssemblyInformationalVersion - surfaces as ProductVersion; what About and marketing text read
+# All four are now cross-checked against each other, read from the COMPILED assembly (not the source),
+# so a stale AssemblyInfo.cs edit cannot reach a package.
 $setupCs  = Join-Path $PSScriptRoot 'Setup.cs'
 $declared = [regex]::Match((Get-Content $setupCs -Raw), 'AppVersion\s*=\s*"([0-9]+(?:\.[0-9]+)*)"').Groups[1].Value
 if (-not $declared) { throw "Could not read AppVersion from $setupCs" }
-if ($declared -ne $ver) {
-    throw "Version mismatch: Finestra.exe is $ver but Setup.cs declares AppVersion = '$declared'. " +
-          "Update AppVersion in $setupCs (and Properties\AssemblyInfo.cs) so they agree, then re-run."
+
+# Normalise every flavour to major.minor.patch: AssemblyVersion/FileVersion carry a 4th field, and an
+# InformationalVersion may legitimately carry a semver suffix (1.0.3-rc1) that is not a version mismatch.
+function Get-Norm3([string]$v) {
+    if ([string]::IsNullOrWhiteSpace($v)) { return '' }
+    $p = @($v.Trim() -split '[\.\+\-]')
+    while ($p.Count -lt 3) { $p += '0' }
+    return ($p[0..2]) -join '.'
 }
-Write-Host "[build] version $ver (Setup.cs AppVersion agrees)"
+
+$exePath  = "$rel\Finestra.exe"
+$fvi      = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exePath)
+$rawFile  = $fvi.FileVersion                                                          # AssemblyFileVersion
+$rawProd  = $fvi.ProductVersion                                                       # AssemblyInformationalVersion
+$rawAsm   = [System.Reflection.AssemblyName]::GetAssemblyName($exePath).Version.ToString()   # AssemblyVersion
+
+$ver = Get-Norm3 $rawFile     # distributable names keep tracking FileVersion, exactly as before
+
+$bad = @()
+if ((Get-Norm3 $rawFile) -ne $declared) { $bad += "AssemblyFileVersion          = '$rawFile'" }
+if ((Get-Norm3 $rawAsm)  -ne $declared) { $bad += "AssemblyVersion              = '$rawAsm'" }
+if ((Get-Norm3 $rawProd) -ne $declared) { $bad += "AssemblyInformationalVersion = '$rawProd'" }
+if ($bad.Count -gt 0) {
+    throw ("Version mismatch. Setup.cs declares AppVersion = '$declared', but the built assembly says:`n  " +
+           ($bad -join "`n  ") +
+           "`nR5: a bump is FOUR edits - AssemblyInfo.cs lines 13/14/15 and Setup.cs's AppVersion const.")
+}
+Write-Host "[build] version $ver (AssemblyVersion + FileVersion + InformationalVersion + Setup.cs AppVersion all agree)"
 
 # Locate a C# compiler (Roslyn preferred; framework csc is the fallback).
 # Override with $env:FINESTRA_CSC when neither default location applies.
@@ -169,54 +279,83 @@ if (Test-Path $readme) { Copy-Item $readme (Join-Path $stage 'README.txt') }
 New-Item $outdir -ItemType Directory -Force | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-# 1a. The PORTABLE ZIP is the same stage, zipped as-is (the RT no-install path AND the GPL relinking path:
-#     a user can swap any DLL/engine and re-run - nothing is registered anywhere).
-# FIN-CAMERA-CAPABILITY G4 — a private build must be UNMISTAKABLE. The name carries PRIVATE and
+# PRIVATE-BUILD MARKING — a private build must be UNMISTAKABLE. The name carries PRIVATE and
 # DO-NOT-DISTRIBUTE, so it cannot be confused with a release artefact in a folder listing, in a chat
 # window, or six months from now.
 $nameTag = if ($AllowSpikeEngines) { "PRIVATE-DO-NOT-DISTRIBUTE-$ver" } else { $ver }
-$portable = Join-Path $root "installer\Output\Finestra-$nameTag-portable.zip"
-if (Test-Path $portable) { Remove-Item $portable -Force }
-[System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $portable)
 
-# 1b. payload.zip for the installer (identical content).
+# ORDER MATTERS BELOW. The installer payload and the portable zip are the SAME stage except for one
+# file, so the payload is written FIRST, then the portable sentinel is added, then the portable.
+#
+# 1a. payload.zip for the INSTALLER - deliberately WITHOUT the portable sentinel. An installed copy
+#     must keep using the shared per-user data directory, which is how a public and a private install
+#     see the same connections.
 $payload = Join-Path $outdir 'payload.zip'
 if (Test-Path $payload) { Remove-Item $payload -Force }
 [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $payload)
+
+# 1b. The PORTABLE sentinel, for BOTH flavours (the RT no-install path AND the GPL relinking path).
+#     ⚠ NOT gated on -AllowSpikeEngines. It used to be, and that was the bug: the sentinel rode on the
+#     private flavour only, so the PUBLIC portable zip never carried it and was not portable at all.
+#     Portability is a property of a portable bundle, not of a private one - never key it off the
+#     DO-NOT-DISTRIBUTE marker or any other private-only artefact.
+Set-Content -Path (Join-Path $stage 'Finestra.portable') -Encoding ascii -Value @(
+  'This file makes Finestra PORTABLE: it keeps ALL of its data in this folder -',
+  'connections, settings, known hosts, certificates and the log - instead of in',
+  'your Documents folder. Nothing outside this folder is read or written.',
+  '',
+  'So this copy starts with NO connections, and any you create here stay here.',
+  'That is the point: extract it anywhere, carry it, delete the folder to remove it.',
+  '',
+  'Delete this file to make this copy use the shared Documents\Finestra data instead.')
+Write-Host "[build] portable sentinel written into the PORTABLE bundle only (installer payload has none)"
+
+# 1c. The PORTABLE ZIP - the same stage plus that one file.
+$portable = Join-Path $OutputRoot "Finestra-$nameTag-portable.zip"
+if (Test-Path $portable) { Remove-Item $portable -Force }
+[System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $portable)
 $stageSizeMB = [math]::Round(((Get-ChildItem $stage -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 2)
 Remove-Item $stage -Recurse -Force
 
 # 2. Compile Setup.exe as AnyCPU (MSIL -> runs on RT + x86/x64), embedding the icon.
 $setup = Join-Path $outdir 'Setup.exe'
 if (Test-Path $setup) { Remove-Item $setup -Force }
+# FIN-PRIVATE-SEPARATION — a private installer is compiled as a SEPARATE PRODUCT: PRIVATE_BUILD swaps
+# the identity consts in Setup.cs (install folder, shortcut name, uninstall key, display name) so it
+# cannot overwrite or uninstall the public app. Conditional compilation rather than a runtime flag on
+# purpose: the public Setup.exe then does not merely decline the private identity, it does not contain
+# it at all.
+$setupDefines = @()
+if ($AllowSpikeEngines) { $setupDefines += '/define:PRIVATE_BUILD' }
 & $csc /nologo /target:winexe /platform:anycpu "/out:$setup" "/win32icon:$icon" "/resource:$icon,FinestraSetup.icon.ico" `
+    @setupDefines `
     /reference:System.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll `
     /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll "$here\Setup.cs"
 if ($LASTEXITCODE -ne 0) { throw "csc failed ($LASTEXITCODE)" }
+if ($AllowSpikeEngines) { Write-Host "[build] PRIVATE: Setup.exe compiled with PRIVATE_BUILD (separate install dir, shortcut and uninstall entry)" }
 
 # 3. Package the RT-runnable installer distributable (Setup.exe + payload.zip must travel together -
 #    Setup.exe extracts payload.zip from next to itself).
-$dist = Join-Path $root "installer\Output\Finestra-Setup-$nameTag.zip"
+$dist = Join-Path $OutputRoot "Finestra-Setup-$nameTag.zip"
 if (Test-Path $dist) { Remove-Item $dist -Force }
 [System.IO.Compression.ZipFile]::CreateFromDirectory($outdir, $dist)
 
 # 3b. FIN-CAMERA-CAPABILITY G4 — the marker, written BESIDE the artefacts.
 if ($AllowSpikeEngines) {
-    $marker = Join-Path $root 'installer\Output\PRIVATE-DO-NOT-DISTRIBUTE.txt'
+    $marker = Join-Path $OutputRoot 'PRIVATE-DO-NOT-DISTRIBUTE.txt'
     @(
       'PRIVATE BUILD - DO NOT DISTRIBUTE, DO NOT PUBLISH, DO NOT ATTACH TO A RELEASE.',
       '',
       "Produced $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') by installer\anycpu\build.ps1 -AllowSpikeEngines.",
-      'That switch exists to package an engine carrying PRIVATE spike code, which the provenance',
-      'guard otherwise refuses outright.',
+      'That switch exists to package an engine that was NOT built from the publication branch, which',
+      'the provenance guard otherwise refuses outright.',
       '',
-      $(if ($spikeEngines.Count) { "Engines carrying spike code: $($spikeEngines -join ', ')" }
-        else { 'No staged engine carried spike code, but the switch was given, so this output is marked private anyway.' }),
+      $(if ($spikeEngines.Count) { "Engines not from the publication branch: $($spikeEngines -join ', ')" }
+        else { 'Every staged engine looked publication-branch clean, but the switch was given, so this output is marked private anyway.' }),
       '',
-      'The camera / rdpecam feature is PRIVATE. Nothing about it - the binary, its source, its patches,',
-      'or the /camera: switch - is published, committed to a public repo, or pushed to hamed7ir/FreeRDP',
-      'without explicit approval, per instance. Private does NOT mean deprecated: the feature is kept',
-      'and supported for private builds.',
+      'This build is PRIVATE and stays private: not published, not released, not attached to a release,',
+      'and not pushed to any public repository without explicit approval, per instance. Private does NOT',
+      'mean deprecated - it is a supported way to build, just not a shippable one.',
       '',
       'The published release artefacts are the ones WITHOUT this marker and without PRIVATE in their',
       'file names. If you are looking at a folder containing both, the private ones are not shippable.'
@@ -225,7 +364,10 @@ if ($AllowSpikeEngines) {
 }
 
 # 4. Checksums.
-$sums = Join-Path $root 'installer\Output\SHA256SUMS.txt'
+# FIN-PRIVATE-CAM — the sums file carries the SAME tag as the artefacts it describes. Previously it was
+# always 'SHA256SUMS.txt', so a private build silently OVERWROTE the public release's sums file sitting
+# beside it - the one artefact whose whole job is to be trusted. Tagging it keeps the two apart.
+$sums = Join-Path $OutputRoot ("SHA256SUMS" + $(if ($AllowSpikeEngines) { "-PRIVATE-DO-NOT-DISTRIBUTE-$ver" } else { "" }) + ".txt")
 $lines = @()
 foreach ($f in @($dist, $portable)) {
     $h = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()

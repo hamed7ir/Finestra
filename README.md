@@ -55,6 +55,9 @@ on 32-bit Windows, drop a 32-bit `wfreerdp.exe` into `engine\x86\` — see the R
 lift the one from the [1.0.2 release](https://github.com/hamed7ir/Finestra/releases), which shipped it.
 
 **Requirements**
+- **Supported on ARM32:** Windows RT **8.0**, Windows RT **8.1**, and **Windows 10 ARM32**
+  (build 15035). On RT 8.0 the .NET Framework **4.8** update has to be installed first, and it is
+  currently difficult to obtain for that version.
 - .NET Framework **4.7+** (in-box on Windows 10 1703+).
 - **Windows RT 8.1**: a jailbroken device (RT only runs unsigned desktop apps after jailbreak).
 - Binaries are **unsigned** — SmartScreen will warn on first run (*More info → Run anyway*).

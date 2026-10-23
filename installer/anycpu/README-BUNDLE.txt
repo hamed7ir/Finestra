@@ -1,45 +1,50 @@
-Finestra — Remote Connection Manager
-===================================
-RDP · SSH · SFTP / FTP / FTPS — one themed, tabbed client.
-Runs on Windows RT 8.1 (ARM32, jailbroken), Windows 10/11 ARM32, x86 and x64.
+Finestra, a remote connection manager
+=====================================
+RDP, SSH, SFTP, FTP and FTPS in one app, with tabs.
+It runs on Windows RT 8.0 and 8.1 (ARM32, jailbroken), Windows 10 ARM32, and Windows 10 and 11 on
+x86 and x64.
 
 Requirements
 ------------
-- .NET Framework 4.7 or later (in-box on Windows 10 1703+; RT 8.1 has 4.5 in-box —
-  the app targets 4.7 and runs on the jailbroken RT stack used for testing).
-- Windows RT requires a jailbroken device (unsigned desktop apps).
-- The binaries are unsigned — SmartScreen will warn on first run (More info → Run anyway).
+- .NET Framework 4.7 or newer. Windows 10 1703 and later already have it. On Windows RT you need to
+  have it installed too. On RT 8.0 that means the .NET Framework 4.8 update.
+- Windows RT has to be jailbroken, because RT only runs unsigned desktop apps after a jailbreak.
+- The files are not signed, so SmartScreen warns the first time. Click "More info", then "Run anyway".
 
-Running
--------
-Extract this folder anywhere and run Finestra.exe. Nothing is registered; delete the
-folder to remove it.
+Installed or portable
+---------------------
+If you installed Finestra with the setup, uninstall it from Settings > Apps (Windows 10 and 11) or
+Control Panel > Programs and Features (Windows RT 8.x), or run uninstall.exe in this folder. Your
+connections and settings are in Documents\Finestra and uninstall keeps them.
 
-Where your data (connections, host keys, certificates, settings) is kept depends on one
-file, Finestra.portable, sitting next to Finestra.exe:
+If this is the portable zip, there is a file called Finestra.portable next to Finestra.exe. Because of
+that file, Finestra keeps everything (connections, host keys, certificates, settings and the log) in
+this folder and nothing outside it. So it starts with no connections, and your data moves with the
+folder. Delete the folder to remove it. Delete just Finestra.portable if you want this copy to use
+Documents\Finestra instead.
+"Start with Windows" is a Windows setting, not a file, so if you turn it on, that one thing lives
+outside the folder.
 
-  - PRESENT  — this is a portable copy. Everything stays in this folder and nothing
-               outside it is read or written, so the copy starts with NO connections and
-               any you create travel with the folder. The portable download ships this
-               file; read it for the details.
-  - ABSENT   — the installed layout. Data lives in Documents\Finestra, shared with every
-               other installed copy, and it survives upgrades and uninstalls.
+RDP engine
+----------
+The RDP engine is sdl-freerdp.exe: FreeRDP 3.32.2, its SDL3 client, with my changes. Finestra picks the
+right one for your PC: engine\x64 on 64-bit Windows, engine\arm on Windows RT and ARM32 Windows.
+I have not tested ARM64 Windows.
 
-Delete Finestra.portable to switch a portable copy over to the shared Documents location.
-Note that "run at Windows startup", if you turn it on, is a Windows setting rather than a
-file, so it is the one thing that lives outside the folder either way.
+There is no 32-bit x86 engine here. On 32-bit Windows read engine\x86\README.txt. SSH, SFTP, FTP and
+FTPS work without it.
 
-The RDP engine (wfreerdp.exe, a modified FreeRDP 3.28.0 build) is picked automatically to
-match your machine: engine\x64 on 64-bit Windows, engine\arm on Windows RT 8.1 and on
-ARM32/ARM64 Windows.
-
-32-bit x86 Windows: the x86 engine is NOT bundled — engine\x86\ ships with a README that
-explains how to add one (you can copy it out of the Finestra 1.0.2 download, which did
-bundle it). Everything except RDP works without it; SSH, SFTP, FTP and FTPS are unaffected.
+Touch screens
+-------------
+On a PC with a touch screen, a connected RDP session has a Touch / Mouse button on its tab bar (a hand
+means Touch mode, an arrow means Mouse mode). In Touch mode your fingers go to the remote PC as real
+touch, so swipe and pinch work when the remote PC supports it. In Mouse mode a tap is a click, a drag
+is a drag, and press and hold is a right click. Settings > Session > "Touch screen in RDP starts as"
+picks how new sessions start, and pressing the button changes that setting too.
 
 License
 -------
-Finestra is © 2026 Hamed Ghorbani, licensed under GPL-3.0-only — see LICENSE.
-Third-party components and full license texts: THIRD-PARTY-NOTICES.txt.
-FreeRDP modification notice (Apache-2.0 §4(b)): FREERDP-MODIFICATIONS.txt.
+Finestra is (c) 2026 Hamed Ghorbani, under the GPL-3.0-only license. See LICENSE.
+The other projects it uses and their full licenses: THIRD-PARTY-NOTICES.txt.
+What I changed in FreeRDP (Apache-2.0 section 4(b)): FREERDP-MODIFICATIONS.txt.
 Source code: https://github.com/hamed7ir/Finestra

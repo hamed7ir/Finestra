@@ -1,5 +1,5 @@
 ﻿# =============================================================================
-#  Builds the AnyCPU .NET installer (Setup.exe + payload.zip) AND the portable ZIP
+#  Builds the AnyCPU .NET installer (ONE self-contained Setup exe) AND the portable ZIP
 #  from Finestra\bin\Release. Pattern MIRRORED from CS-Ray installer/anycpu/build.ps1.
 #
 #  WHY AnyCPU: an Inno Setup installer is native x86 and CANNOT run on Windows RT /
@@ -8,15 +8,16 @@
 #  after staging the release engines into bin\Release\engine\{x64,x86,arm}.
 #
 #  Produces (all under the OUTPUT ROOT - see -OutputRoot; public defaults to release\public\):
-#    anycpu\Setup.exe + anycpu\payload.zip       (must travel together)
-#    Finestra-Setup-<version>.zip                 (ship: extract, run Setup.exe)
+#    Finestra-Setup-<version>.exe                 (ship: download, run - payload + uninstaller embedded)
 #    Finestra-<version>-portable.zip              (ship: extract anywhere, run Finestra.exe)
 #    SHA256SUMS.txt
+#  Intermediates (payload.zip, payload.list, uninstall.exe) are built in a temporary work folder and
+#  never reach the output root.
 # =============================================================================
 # PRIVATE packaging opt-in — the ONLY way past the engine provenance guard below.
 #
-# THE RULE: a RELEASE engine is built from the publication branch finestra-arm32-rt-3.28, which carries
-# exactly four source modifications over FreeRDP 3.28.0 and nothing else. The development tree carries
+# THE RULE: a RELEASE engine is built from the publication branch finestra-arm32-rt-3.32, which carries
+# exactly six modifications over FreeRDP 3.32.2 and nothing else (1.0.3 and earlier: -3.28, four). The development tree carries
 # additional, unreleased work on top of that. An engine built from the development tree is therefore not
 # a release engine, however it was labelled -- so the guard below identifies one by what survives
 # compilation and refuses it.
@@ -81,8 +82,6 @@ if ($AllowSpikeEngines) {
 New-Item $OutputRoot -ItemType Directory -Force | Out-Null
 Write-Host ("[build] output root = {0}  ({1})" -f $OutputRoot, $(if ($AllowSpikeEngines) { 'PRIVATE' } else { 'public' }))
 
-$outdir = Join-Path $OutputRoot 'anycpu'
-
 if (-not (Test-Path "$rel\Finestra.exe")) { throw "Build Release first: '$rel\Finestra.exe' not found." }
 if (-not (Test-Path $icon))               { throw "App icon not found: '$icon'." }
 # ENGINE SET (FIN-X86-UNBUNDLE) -------------------------------------------------------------------
@@ -100,16 +99,35 @@ $EngineKnown    = $EngineRequired + $EngineOptional
 # there is a PUBLIC one, riding inside an artefact named DO-NOT-DISTRIBUTE. That is a distribution
 # hazard, so in spike mode x64 becomes the only REQUIRED arch and arm is FORBIDDEN outright.
 # This tightens the rule and changes nothing on the public path below.
+# SDL-ENGINE — ONE engine per folder, under one of two names:
+#   sdl-freerdp.exe : FreeRDP's SDL client with Finestra's module - what a PUBLIC bundle ships since the SDL switch
+#   wfreerdp.exe    : the Windows client - a private build's engine, or a user's own x86 build
+# The app takes either (RdpLauncher.EngineCandidates, SDL first). Both in one folder is a staging mistake: the
+# app would silently run the SDL one and the other would ship as dead weight.
+$EngineNames = @('sdl-freerdp.exe', 'wfreerdp.exe')
+function Get-EngineFile([string]$arch) {
+    $found = @($EngineNames | Where-Object { Test-Path "$rel\engine\$arch\$_" })
+    if ($found.Count -gt 1) { throw "Two engines staged in '$rel\engine\$arch' ($($found -join ', ')). Stage exactly one." }
+    if ($found.Count -eq 1) { return $found[0] }
+    return $null
+}
+
 if ($AllowSpikeEngines) {
     $EngineRequired = @('x64')
-    if (Test-Path "$rel\engine\arm\wfreerdp.exe") {
-        throw "PRIVATE build: an ARM engine is staged at '$rel\engine\arm\wfreerdp.exe'. Private/spike builds are x64-ONLY - unstage it before packaging."
+    $armEng = Get-EngineFile 'arm'
+    if ($armEng) {
+        throw "PRIVATE build: an ARM engine is staged at '$rel\engine\arm\$armEng'. Private/spike builds are x64-ONLY - unstage it before packaging."
     }
 }
 
 foreach ($a in $EngineRequired) {
-    if (-not (Test-Path "$rel\engine\$a\wfreerdp.exe")) {
-        throw "Engine missing: '$rel\engine\$a\wfreerdp.exe' - stage the RELEASE engines first. ($a is REQUIRED; only x86 is optional.)"
+    $e = Get-EngineFile $a
+    if (-not $e) {
+        throw "Engine missing: '$rel\engine\$a\sdl-freerdp.exe' - stage the RELEASE engines first. ($a is REQUIRED; only x86 is optional.)"
+    }
+    # A PUBLIC bundle ships the SDL engine: a wfreerdp.exe in a required slot is a stale staging.
+    if (-not $AllowSpikeEngines -and $e -ne 'sdl-freerdp.exe') {
+        throw "Engine '$a' is staged as '$e', but a public bundle ships the SDL engine: stage engine\$a\sdl-freerdp.exe (and remove '$e')."
     }
 }
 # An engine folder nobody declared means the staging convention drifted - fail rather than ship it blind.
@@ -119,14 +137,16 @@ if (Test-Path "$rel\engine") {
         throw "Unexpected engine folder(s) in '$rel\engine': $($unknownEng -join ', '). Known: $($EngineKnown -join ', ')."
     }
 }
-# Only folders that actually hold a wfreerdp.exe are staged/scanned - a README-only x86 folder is not a binary.
-$EnginePresent = @($EngineKnown | Where-Object { Test-Path "$rel\engine\$_\wfreerdp.exe" })
+# Only folders that actually hold an engine are staged/scanned - a README-only x86 folder is not a binary.
+$EngineFile = @{}
+foreach ($a in $EngineKnown) { $e = Get-EngineFile $a; if ($e) { $EngineFile[$a] = $e } }
+$EnginePresent = @($EngineKnown | Where-Object { $EngineFile.ContainsKey($_) })
 $EngineAbsent  = @($EngineKnown | Where-Object { $EnginePresent -notcontains $_ })
 Write-Host ("[build] engines: required {0} OK; binaries present {1}{2}" -f ($EngineRequired -join '/'), ($EnginePresent -join '/'), $(if ($EngineAbsent.Count) { "; absent (optional) " + ($EngineAbsent -join '/') } else { "" }))
 
 $spikeEngines = @()
 # ENGINE PROVENANCE GUARD -----------------------------------------------------------------------
-# A release engine comes from the publication branch finestra-arm32-rt-3.28. The development tree
+# A release engine comes from the publication branch finestra-arm32-rt-3.32. The development tree
 # carries unreleased work on top of that branch, so an engine built there would ship it silently.
 #
 # Identify one by what SURVIVES COMPILATION, not by anything written in source: a comment marker does
@@ -143,7 +163,7 @@ $spikeEngines = @()
 #     SOURCE REFS (a branch, a tree)  -> presence of the backend's own source DIRECTORY
 #     BUILT BINARIES (what is below)  -> the mfplat / mfreadwrite strings
 #   Do NOT scan a source ref for mfplat. Upstream's own libfreerdp/codec/h264_mf.c contains it, so
-#   every ref descended from 3.28.0 matches and the scan reads as "everything is contaminated".
+#   every ref descended from upstream 3.x (3.28.0 and 3.32.2 alike) matches and the scan reads as "everything is contaminated".
 #
 # ⚠ AND THIS SCAN HAS A BUILD-CONFIG DEPENDENCY. It is only sound while the pinned configuration
 #   leaves Media Foundation OUT of the engine. The gate is NOT WITH_OPENH264 - it is:
@@ -166,20 +186,37 @@ $spikeEngines = @()
 #   -DWITH_MEDIA_FOUNDATION=OFF explicitly; port\x64-rig-configure.bat passes NEITHER flag and relies
 #   purely on the CMake default (cmake/ConfigOptions.cmake declares it OFF). A default is a weaker
 #   guarantee than an explicit flag - if an upstream bump ever changes it, that recipe changes silently.
+#
+# SDL-ENGINE — THE SIGNATURES DEPEND ON THE ENGINE KIND.
+#   GetAsyncKeyState is a fingerprint for wfreerdp ONLY. SDL3 itself calls it (SDL_windowsevents.c,
+#   SDL_windowsmouse.c), so every SDL engine carries it and it proves nothing there - measured: present in
+#   the publication-branch SDL engine, absent from the staged 1.0.3 wfreerdp. mfplat/mfreadwrite stay for
+#   both kinds (SDL is built with SDL_CAMERA=OFF and FreeRDP with WITH_MEDIA_FOUNDATION=OFF: measured
+#   absent from the SDL engine, at both UTF-16 parities).
+#   An SDL engine must additionally carry Finestra's module - its window class "FinestraSessionWindow", a
+#   UTF-16 literal, so BOTH byte parities are read (a string at an odd offset is invisible to a scan that
+#   starts at byte 0). A stock upstream sdl-freerdp cannot embed in Finestra at all: that is refused even in
+#   a private build, because it is not a provenance question but a broken package.
+#   No SDL-engine spike exists yet. When one does, add ITS compiled fingerprint here.
 foreach ($a in $EnginePresent) {
-    $engPath = "$rel\engine\$a\wfreerdp.exe"
+    $engFile = $EngineFile[$a]
+    $engPath = "$rel\engine\$a\$engFile"
     $bytes   = [System.IO.File]::ReadAllBytes($engPath)
     $ascii   = [System.Text.Encoding]::ASCII.GetString($bytes)
-    $wide    = [System.Text.Encoding]::Unicode.GetString($bytes)     # a marker may be UTF-16
+    $wide    = [System.Text.Encoding]::Unicode.GetString($bytes)     # a marker may be UTF-16 (parity 0)
+    $wide1   = [System.Text.Encoding]::Unicode.GetString($bytes, 1, $bytes.Length - 1)   # ... or at an odd offset
     $sig = @()
-    if ($ascii.Contains('GetAsyncKeyState') -or $wide.Contains('GetAsyncKeyState')) { $sig += 'GetAsyncKeyState' }
+    if ($engFile -eq 'wfreerdp.exe' -and ($ascii.Contains('GetAsyncKeyState') -or $wide.Contains('GetAsyncKeyState'))) { $sig += 'GetAsyncKeyState' }
     foreach ($mf in 'mfplat.dll','mfreadwrite.dll') {
-        if ($ascii.ToLower().Contains($mf) -or $wide.ToLower().Contains($mf)) { $sig += $mf }
+        if ($ascii.ToLower().Contains($mf) -or $wide.ToLower().Contains($mf) -or $wide1.ToLower().Contains($mf)) { $sig += $mf }
+    }
+    if ($engFile -eq 'sdl-freerdp.exe' -and -not ($wide.Contains('FinestraSessionWindow') -or $wide1.Contains('FinestraSessionWindow'))) {
+        throw "Engine '$a' is an SDL client WITHOUT Finestra's embedding module (no 'FinestraSessionWindow' at either UTF-16 parity) - a stock sdl-freerdp cannot run inside Finestra. Build it from the fork branch finestra-arm32-rt-3.32."
     }
     if ($sig.Count -gt 0) {
         # -AllowSpikeEngines is the ONLY bypass, and it is loud: the artefacts get renamed and marked.
         if (-not $AllowSpikeEngines) {
-            throw "Engine '$a' is not built from the publication branch - it carries $($sig -join ', '), which finestra-arm32-rt-3.28 does not. Build release engines from that branch, not the development tree. If this is a deliberate PRIVATE build, re-run with -AllowSpikeEngines."
+            throw "Engine '$a' is not built from the publication branch - it carries $($sig -join ', '), which finestra-arm32-rt-3.32 does not. Build release engines from that branch, not the development tree. If this is a deliberate PRIVATE build, re-run with -AllowSpikeEngines."
         }
         $spikeEngines += $a
         Write-Host ("[build] PRIVATE: engine '{0}' is not from the publication branch ({1}) - allowed by -AllowSpikeEngines" -f $a, ($sig -join ', '))
@@ -254,22 +291,57 @@ if (-not $csc -or -not (Test-Path $csc)) {
 if (-not $csc) { throw "No C# compiler found. Set FINESTRA_CSC to a csc.exe path." }
 
 # 1. Stage the payload FLAT. Finestra is pure-managed with NO App.config <probing privatePath> - every managed
-#    DLL sits BESIDE the exe. The native engines live under engine\<arch>\wfreerdp.exe, resolved by the app's
+#    DLL sits BESIDE the exe. The native engines live under engine\<arch>\sdl-freerdp.exe, resolved by the app's
 #    own BaseDirectory logic. One UNIVERSAL bundle for all three architectures.
+#
+#    EXPLICIT FILE LIST (installer review B3). The payload is exactly the names below, never "whatever is in
+#    bin\Release": a DLL that appears there and is not on this list FAILS the build, and so does one on the
+#    list that is missing. That turns a dependency change (a NuGet bump that adds or drops an assembly) into
+#    a build error instead of an installer that silently ships without it - or ships a stray file forever,
+#    since everything in the payload becomes a file Setup owns and uninstall deletes.
+#    ⚠ When this list gains a name, add it to Setup.cs's Owned.Shipped too: that list is what lets a LATER
+#    upgrade remove a DLL its own package no longer carries.
+$Dlls = @(
+    'BouncyCastle.Cryptography.dll', 'FluentFTP.dll', 'Microsoft.Bcl.AsyncInterfaces.dll', 'Microsoft.Bcl.Cryptography.dll',
+    'Microsoft.Extensions.DependencyInjection.Abstractions.dll', 'Microsoft.Extensions.Logging.Abstractions.dll',
+    'Newtonsoft.Json.dll', 'Renci.SshNet.dll', 'System.Buffers.dll', 'System.Diagnostics.DiagnosticSource.dll',
+    'System.Formats.Asn1.dll', 'System.Memory.dll', 'System.Numerics.Vectors.dll',
+    'System.Runtime.CompilerServices.Unsafe.dll', 'System.Threading.Tasks.Extensions.dll', 'System.ValueTuple.dll',
+    'VtNetCore.dll'
+)
+$missingDll = @($Dlls | Where-Object { -not (Test-Path (Join-Path $rel $_)) })
+if ($missingDll.Count) { throw ("DLLs on the package list are missing from bin\Release: " + ($missingDll -join ', ')) }
+$extraDll = @(Get-ChildItem $rel -Filter *.dll | ForEach-Object Name | Where-Object { $Dlls -notcontains $_ })
+if ($extraDll.Count) { throw ("Unexpected DLLs in bin\Release (update the package list in build.ps1, and Owned.Shipped in Setup.cs): " + ($extraDll -join ', ')) }
+$setupSrc = Get-Content (Join-Path $PSScriptRoot 'Setup.cs') -Raw
+$unowned = @($Dlls | Where-Object { $setupSrc -notmatch [regex]::Escape('"' + $_ + '"') })
+if ($unowned.Count) { throw ("DLLs in the package that Setup.cs's Owned.Shipped does not list (a later upgrade could never retire them): " + ($unowned -join ', ')) }
+# Same rule for the engine folders: the one engine and nothing else. A log, a trace or a .pdb left beside a staged
+# engine would otherwise ride into the bundle.
+foreach ($a in $EnginePresent) {
+    $strays = @(Get-ChildItem "$rel\engine\$a" -Force | Where-Object { $_.Name -ne $EngineFile[$a] } | ForEach-Object Name)
+    if ($strays.Count) { throw "Unexpected file(s) beside the staged engine in '$rel\engine\$a': $($strays -join ', '). Only $($EngineFile[$a]) is packaged." }
+}
+
 $stage = Join-Path $env:TEMP ("finpay_" + [Guid]::NewGuid().ToString('N'))
 New-Item $stage -ItemType Directory -Force | Out-Null
 Copy-Item "$rel\Finestra.exe", "$rel\Finestra.exe.config" $stage
-Copy-Item "$rel\*.dll" $stage                          # the managed closure, flat beside the exe
-Copy-Item "$rel\engine" $stage -Recurse                # engine\<arch>\wfreerdp.exe
+foreach ($d in $Dlls) { Copy-Item (Join-Path $rel $d) $stage }   # the managed closure, flat beside the exe
+foreach ($a in $EnginePresent) {                                   # engine\<arch>\<the one engine>
+    New-Item (Join-Path $stage "engine\$a") -ItemType Directory -Force | Out-Null
+    Copy-Item "$rel\engine\$a\$($EngineFile[$a])" (Join-Path $stage "engine\$a\$($EngineFile[$a])")
+}
 # x86 is UNBUNDLED (FIN-X86-UNBUNDLE). The FOLDER still ships - so the app's "expected
-# engine\x86\wfreerdp.exe beside the app" message names a real place, and a user on 32-bit Windows can
+# engine\x86\ beside the app" message names a real place, and a user on 32-bit Windows can
 # drop their own build in - but the BINARY does not. Excluding it here rather than deleting it from
 # bin\Release keeps the exclusion explicit and reviewable, and leaves the build output intact.
 $stageX86 = Join-Path $stage 'engine\x86'
 New-Item $stageX86 -ItemType Directory -Force | Out-Null
-if (Test-Path (Join-Path $stageX86 'wfreerdp.exe')) {
-    Remove-Item (Join-Path $stageX86 'wfreerdp.exe') -Force
-    Write-Host "[build] x86 engine binary EXCLUDED from the bundle (folder + README still ship)"
+foreach ($n in $EngineNames) {
+    if (Test-Path (Join-Path $stageX86 $n)) {
+        Remove-Item (Join-Path $stageX86 $n) -Force
+        Write-Host "[build] x86 engine binary ($n) EXCLUDED from the bundle (folder + README still ship)"
+    }
 }
 $x86Readme = Join-Path $here 'engine-x86-README.txt'
 if (-not (Test-Path $x86Readme)) { throw "Missing '$x86Readme' - engine\x86\ must ship with its README." }
@@ -304,11 +376,12 @@ try {
 } catch { }
 $engineLines = @()
 foreach ($a in $EnginePresent) {
-    $p = "$rel\engine\$a\wfreerdp.exe"
-    if (Test-Path $p) { $engineLines += ("  engine/{0,-4} {1}" -f $a, (Get-FileHash $p -Algorithm SHA256).Hash.ToLower()) }
+    if ($a -eq 'x86') { continue }   # excluded from the bundle above: list only what ships
+    $p = "$rel\engine\$a\$($EngineFile[$a])"
+    if (Test-Path $p) { $engineLines += ("  engine/{0}/{1,-16} {2}" -f $a, $EngineFile[$a], (Get-FileHash $p -Algorithm SHA256).Hash.ToLower()) }
 }
 Set-Content -Path (Join-Path $stage 'BUILD-INFO.txt') -Encoding utf8 -Value (@(
-  "Finestra $ver" + $(if ($AllowSpikeEngines) { '  [PRIVATE BUILD - DO NOT DISTRIBUTE]' } else { '' }),
+  ("Finestra $ver" + $(if ($AllowSpikeEngines) { '  [PRIVATE BUILD - DO NOT DISTRIBUTE]' } else { '' })),   # parenthesised: ',' binds before '+'
   '',
   "source commit : $commit",
   "tree          :$treeState",
@@ -319,77 +392,174 @@ Set-Content -Path (Join-Path $stage 'BUILD-INFO.txt') -Encoding utf8 -Value (@(
   "  git clone https://github.com/hamed7ir/Finestra && git -C Finestra checkout $commit",
   '',
   'RDP engine binaries in this bundle (SHA-256), built from the FreeRDP fork branch',
-  'finestra-arm32-rt-3.28 at https://github.com/hamed7ir/FreeRDP :'
+  'finestra-arm32-rt-3.32 at https://github.com/hamed7ir/FreeRDP :'
 ) + $engineLines)
 Write-Host ("[build] provenance: commit {0}{1}" -f $commit, $treeState)
 
-New-Item $outdir -ItemType Directory -Force | Out-Null
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression
 
 # PRIVATE-BUILD MARKING — a private build must be UNMISTAKABLE. The name carries PRIVATE and
 # DO-NOT-DISTRIBUTE, so it cannot be confused with a release artefact in a folder listing, in a chat
-# window, or six months from now.
+# window, or six months from now. A single exe is easier to attach somewhere by mistake than a zip
+# was, so this matters more, not less.
 $nameTag = if ($AllowSpikeEngines) { "PRIVATE-DO-NOT-DISTRIBUTE-$ver" } else { $ver }
 
-# ORDER MATTERS BELOW. The installer payload and the portable zip are the SAME stage except for one
-# file, so the payload is written FIRST, then the portable sentinel is added, then the portable.
-#
-# 1a. payload.zip for the INSTALLER - deliberately WITHOUT the portable sentinel. An installed copy
-#     must keep using the shared per-user data directory, which is how a public and a private install
-#     see the same connections.
-$payload = Join-Path $outdir 'payload.zip'
-if (Test-Path $payload) { Remove-Item $payload -Force }
-[System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $payload)
+# Zip a folder with FORWARD-SLASH entry names. Windows PowerShell 5.1's ZipFile.CreateFromDirectory writes
+# backslashes (measured: 3 of 28 entries in the 2.0.0 portable zip), which other unzip tools turn into files
+# literally named 'engine\x64\sdl-freerdp.exe'. Setup.cs accepts either separator.
+function New-ZipFromDir([string]$dir, [string]$zipPath) {
+    $root = (Resolve-Path $dir).Path.TrimEnd('\') + '\'
+    $fs = [System.IO.File]::Open($zipPath, [System.IO.FileMode]::CreateNew)
+    $za = New-Object System.IO.Compression.ZipArchive($fs, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($f in (Get-ChildItem $dir -File -Recurse -Force | Sort-Object FullName)) {
+            $rel = $f.FullName.Substring($root.Length).Replace('\', '/')
+            $null = [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($za, $f.FullName, $rel, [System.IO.Compression.CompressionLevel]::Optimal)
+        }
+    }
+    finally { $za.Dispose(); $fs.Dispose() }
+}
 
-# 1b. The PORTABLE sentinel, for BOTH flavours (the RT no-install path AND the GPL relinking path).
-#     ⚠ NOT gated on -AllowSpikeEngines. It used to be, and that was the bug: the sentinel rode on the
-#     private flavour only, so the PUBLIC portable zip never carried it and was not portable at all.
-#     Portability is a property of a portable bundle, not of a private one - never key it off the
-#     DO-NOT-DISTRIBUTE marker or any other private-only artefact.
-Set-Content -Path (Join-Path $stage 'Finestra.portable') -Encoding ascii -Value @(
-  'This file makes Finestra PORTABLE: it keeps ALL of its data in this folder -',
-  'connections, settings, known hosts, certificates and the log - instead of in',
-  'your Documents folder.',
-  '',
-  'So this copy starts with NO connections, and any you create here stay here.',
-  'That is the point: extract it anywhere, carry it, delete the folder to remove it.',
-  '',
-  'One exception, and it is opt-in: "Run at Windows startup" is a Windows setting,',
-  'not a file, so turning it on writes an entry outside this folder that points at',
-  'this exe. Leave it off and nothing outside this folder is written.',
-  '',
-  'Delete this file to make this copy use the shared Documents\Finestra data instead.')
-Write-Host "[build] portable sentinel written into the PORTABLE bundle only (installer payload has none)"
+# Everything intermediate is built in a private work folder and only the finished artefacts are copied to
+# the output root, after every check below has passed - a failed run never leaves a half-built or stale
+# installer where a release could pick it up.
+$work = Join-Path $env:TEMP ("finbuild_" + [Guid]::NewGuid().ToString('N'))
+New-Item $work -ItemType Directory -Force | Out-Null
+try {
+    # ORDER MATTERS BELOW. The installer payload and the portable zip are the SAME stage except for one
+    # file, so the payload is written FIRST, then the portable sentinel is added, then the portable.
+    #
+    # 1a. payload.zip for the INSTALLER - deliberately WITHOUT the portable sentinel. An installed copy
+    #     must keep using the shared per-user data directory, which is how a public and a private install
+    #     see the same connections.
+    #
+    #     payload.list - written from this SAME stage, before the sentinel exists - is embedded in Setup and
+    #     in the uninstaller: sha256 TAB size TAB relative name, one line per file. Setup verifies every
+    #     payload.zip entry against it before touching an existing install, and uninstall.exe deletes exactly
+    #     those names and nothing else.
+    $payloadList = Join-Path $work 'payload.list'
+    $stageFull = (Resolve-Path $stage).Path.TrimEnd('\') + '\'
+    $listLines = @(Get-ChildItem $stage -File -Recurse -Force | Sort-Object FullName | ForEach-Object {
+        (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + "`t" + $_.Length + "`t" + $_.FullName.Substring($stageFull.Length)
+    })
+    if (-not ($listLines | Where-Object { $_ -match "`tFinestra\.exe$" })) { throw "payload.list has no Finestra.exe - the stage is wrong." }
+    if ($listLines | Where-Object { $_ -match "`tFinestra\.portable$" }) { throw "payload.list would carry the portable sentinel - it must be written before the sentinel." }
+    [System.IO.File]::WriteAllLines($payloadList, [string[]]$listLines, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host ("[build] payload.list: {0} files" -f $listLines.Count)
 
-# 1c. The PORTABLE ZIP - the same stage plus that one file.
-$portable = Join-Path $OutputRoot "Finestra-$nameTag-portable.zip"
-if (Test-Path $portable) { Remove-Item $portable -Force }
-[System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $portable)
-$stageSizeMB = [math]::Round(((Get-ChildItem $stage -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 2)
-Remove-Item $stage -Recurse -Force
+    $payload = Join-Path $work 'payload.zip'
+    New-ZipFromDir $stage $payload
+    # The zip and the list must describe the same files, byte for byte - Setup refuses to install otherwise,
+    # so prove it here: every entry's name, size AND SHA-256 against the list, and nothing missing.
+    $want = @{}
+    foreach ($l in $listLines) { $p = $l -split "`t"; $want[$p[2]] = $p }
+    $seen = 0
+    $zr = [System.IO.Compression.ZipFile]::OpenRead($payload)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        foreach ($e in $zr.Entries) {
+            if (-not $e.Name) { continue }
+            $n = $e.FullName.Replace('/', '\')
+            if (-not $want.ContainsKey($n)) { throw "payload.zip holds $n, which payload.list does not." }
+            $st = $e.Open()
+            try { $h = (-join ($sha.ComputeHash($st) | ForEach-Object { $_.ToString('x2') })) } finally { $st.Dispose() }
+            if ($h -ne $want[$n][0] -or [string]$e.Length -ne $want[$n][1]) { throw "payload.zip's $n does not match payload.list (size or SHA-256)." }
+            $seen++
+        }
+    }
+    finally { $sha.Dispose(); $zr.Dispose() }
+    if ($seen -ne $listLines.Count) { throw "payload.zip has $seen of the $($listLines.Count) files payload.list names." }
+    Write-Host ("[build] payload.zip: {0} entries, each matches payload.list by size and SHA-256" -f $seen)
 
-# 2. Compile Setup.exe as AnyCPU (MSIL -> runs on RT + x86/x64), embedding the icon.
-$setup = Join-Path $outdir 'Setup.exe'
-if (Test-Path $setup) { Remove-Item $setup -Force }
-# FIN-PRIVATE-SEPARATION — a private installer is compiled as a SEPARATE PRODUCT: PRIVATE_BUILD swaps
-# the identity consts in Setup.cs (install folder, shortcut name, uninstall key, display name) so it
-# cannot overwrite or uninstall the public app. Conditional compilation rather than a runtime flag on
-# purpose: the public Setup.exe then does not merely decline the private identity, it does not contain
-# it at all.
-$setupDefines = @()
-if ($AllowSpikeEngines) { $setupDefines += '/define:PRIVATE_BUILD' }
-& $csc /nologo /target:winexe /platform:anycpu "/out:$setup" "/win32icon:$icon" "/resource:$icon,FinestraSetup.icon.ico" `
-    @setupDefines `
-    /reference:System.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll `
-    /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll "$here\Setup.cs"
-if ($LASTEXITCODE -ne 0) { throw "csc failed ($LASTEXITCODE)" }
-if ($AllowSpikeEngines) { Write-Host "[build] PRIVATE: Setup.exe compiled with PRIVATE_BUILD (separate install dir, shortcut and uninstall entry)" }
+    # 1b. The PORTABLE sentinel, for BOTH flavours (the RT no-install path AND the GPL relinking path).
+    #     ⚠ NOT gated on -AllowSpikeEngines. It used to be, and that was the bug: the sentinel rode on the
+    #     private flavour only, so the PUBLIC portable zip never carried it and was not portable at all.
+    #     Portability is a property of a portable bundle, not of a private one - never key it off the
+    #     DO-NOT-DISTRIBUTE marker or any other private-only artefact.
+    Set-Content -Path (Join-Path $stage 'Finestra.portable') -Encoding ascii -Value @(
+      'This file makes Finestra PORTABLE: it keeps ALL of its data in this folder -',
+      'connections, settings, known hosts, certificates and the log - instead of in',
+      'your Documents folder.',
+      '',
+      'So this copy starts with NO connections, and any you create here stay here.',
+      'That is the point: extract it anywhere, carry it, delete the folder to remove it.',
+      '',
+      'One exception, and it is opt-in: "Run at Windows startup" is a Windows setting,',
+      'not a file, so turning it on writes an entry outside this folder that points at',
+      'this exe. Leave it off and nothing outside this folder is written.',
+      '',
+      'Delete this file to make this copy use the shared Documents\Finestra data instead.')
+    Write-Host "[build] portable sentinel written into the PORTABLE bundle only (installer payload has none)"
 
-# 3. Package the RT-runnable installer distributable (Setup.exe + payload.zip must travel together -
-#    Setup.exe extracts payload.zip from next to itself).
-$dist = Join-Path $OutputRoot "Finestra-Setup-$nameTag.zip"
-if (Test-Path $dist) { Remove-Item $dist -Force }
-[System.IO.Compression.ZipFile]::CreateFromDirectory($outdir, $dist)
+    # 1c. The PORTABLE ZIP - the same stage plus that one file.
+    $portableWork = Join-Path $work "Finestra-$nameTag-portable.zip"
+    New-ZipFromDir $stage $portableWork
+    $stageSizeMB = [math]::Round(((Get-ChildItem $stage -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 2)
+    Remove-Item $stage -Recurse -Force
+
+    # 2. Compile TWO AnyCPU (MSIL -> runs on RT + x86/x64) executables from Setup.cs, both embedding the icon
+    #    and payload.list:
+    #      uninstall.exe                 - NO payload: what an install leaves in the program folder (under 1 MB,
+    #                                      instead of a full copy of Setup in every install)
+    #      Finestra-Setup-<ver>.exe      - the ONE file a user downloads: payload.zip and that uninstall.exe
+    #                                      embedded as resources (never /linkresource:, which leaves an
+    #                                      external file and would silently bring the separate payload back)
+    # FIN-PRIVATE-SEPARATION — a private installer is compiled as a SEPARATE PRODUCT: PRIVATE_BUILD swaps
+    # the identity consts in Setup.cs (install folder, shortcut name, uninstall key, display name) so it
+    # cannot overwrite or uninstall the public app - in BOTH executables, or a private uninstaller would
+    # carry the public identity. Conditional compilation rather than a runtime flag on purpose: the public
+    # exe then does not merely decline the private identity, it does not contain it at all.
+    $setupDefines = @()
+    if ($AllowSpikeEngines) { $setupDefines += '/define:PRIVATE_BUILD' }
+    $common = @('/nologo', '/target:winexe', '/platform:anycpu', "/win32icon:$icon", "/resource:$icon,FinestraSetup.icon.ico",
+                "/resource:$payloadList,payload.list") + $setupDefines +
+              @('/reference:System.dll', '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll',
+                '/reference:System.IO.Compression.dll', '/reference:System.IO.Compression.FileSystem.dll')
+    $uninst = Join-Path $work 'uninstall.exe'
+    & $csc @common "/out:$uninst" "$here\Setup.cs"
+    if ($LASTEXITCODE -ne 0) { throw "csc failed building uninstall.exe ($LASTEXITCODE)" }
+    $setupExe = Join-Path $work "Finestra-Setup-$nameTag.exe"
+    & $csc @common "/resource:$payload,payload.zip" "/resource:$uninst,uninstall.exe" "/out:$setupExe" "$here\Setup.cs"
+    if ($LASTEXITCODE -ne 0) { throw "csc failed building the Setup exe ($LASTEXITCODE)" }
+
+    # Manifest-resource names sit in the metadata #Strings heap as UTF-8, so a byte scan finds them without
+    # loading the assembly (loading would lock the file for the rest of this console). The icon resource is
+    # the present-control: if the scan cannot see that one, it proves nothing about the others. (Setup.cs
+    # also names "payload.zip" in code, but as a UTF-16 string literal, which an ASCII scan does not match -
+    # that is why the uninstaller's ABSENCE check below is meaningful.)
+    $setupText  = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($setupExe))
+    $uninstText = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($uninst))
+    foreach ($t in @(@('Setup', $setupText), @('uninstall.exe', $uninstText))) {
+        if (-not $t[1].Contains('FinestraSetup.icon.ico')) { throw "Resource scan is blind: the icon resource name was not found in $($t[0])." }
+        if (-not $t[1].Contains('payload.list'))           { throw "$($t[0]) was compiled without the payload.list resource." }
+    }
+    if (-not $setupText.Contains('payload.zip') -or -not $setupText.Contains('uninstall.exe')) { throw 'The Setup exe was compiled without its payload.zip / uninstall.exe resources.' }
+    if ($uninstText.Contains('payload.zip')) { throw 'uninstall.exe carries a payload.zip resource - it must not.' }
+    $setupLen = (Get-Item $setupExe).Length; $uninstLen = (Get-Item $uninst).Length
+    if ($setupLen -le (Get-Item $payload).Length + $uninstLen) { throw "The Setup exe ($setupLen B) is not larger than the payload and uninstaller it should embed - they are not inside it." }
+    if ($uninstLen -ge $setupLen / 5) { throw "uninstall.exe is $uninstLen B against Setup's $setupLen B - it should be a small, payload-free program." }
+    foreach ($x in @($setupExe, $uninst)) {
+        $arch = [System.Reflection.AssemblyName]::GetAssemblyName($x).ProcessorArchitecture
+        if ("$arch" -ne 'MSIL') { throw "$(Split-Path $x -Leaf) is $arch, not MSIL - it would not run on Windows RT." }
+    }
+    Write-Host ("[build] Finestra-Setup-$nameTag.exe {0:N0} B (payload + uninstaller embedded); uninstall.exe {1:N0} B; both MSIL" -f $setupLen, $uninstLen)
+    if ($AllowSpikeEngines) { Write-Host "[build] PRIVATE: both compiled with PRIVATE_BUILD (separate install dir, shortcut and uninstall entry)" }
+
+    # 3. Publish. Only now - every check above passed - do the artefacts reach the output root. The shapes
+    #    earlier builds left there for THIS version (the Setup zip and the anycpu\ intermediate folder) are
+    #    retired: removed, so nothing stale can be attached to a release beside the new exe.
+    foreach ($old in @((Join-Path $OutputRoot "Finestra-Setup-$nameTag.zip"), (Join-Path $OutputRoot 'anycpu'))) {
+        if (Test-Path $old) { Remove-Item $old -Recurse -Force; Write-Host "[build] removed the retired $(Split-Path $old -Leaf)" }
+    }
+    $dist = Join-Path $OutputRoot "Finestra-Setup-$nameTag.exe"
+    $portable = Join-Path $OutputRoot "Finestra-$nameTag-portable.zip"
+    Copy-Item $setupExe $dist -Force
+    Copy-Item $portableWork $portable -Force
+}
+finally {
+    if (Test-Path $work) { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
+}
 
 # 3b. FIN-CAMERA-CAPABILITY G4 — the marker, written BESIDE the artefacts.
 if ($AllowSpikeEngines) {
@@ -427,7 +597,7 @@ foreach ($f in @($dist, $portable)) {
 Set-Content -Path $sums -Value ($lines -join "`n") -Encoding ascii
 
 "Bundle (unpacked) = $stageSizeMB MB"
-"Setup.exe arch    = " + [System.Reflection.AssemblyName]::GetAssemblyName($setup).ProcessorArchitecture
-"Installer dist    = $dist  ({0} MB)" -f [math]::Round((Get-Item $dist).Length / 1MB, 2)
+"Setup.exe arch    = " + [System.Reflection.AssemblyName]::GetAssemblyName($dist).ProcessorArchitecture
+"Installer         = $dist  ({0} MB)" -f [math]::Round((Get-Item $dist).Length / 1MB, 2)
 "Portable dist     = $portable  ({0} MB)" -f [math]::Round((Get-Item $portable).Length / 1MB, 2)
 Get-Content $sums | ForEach-Object { "SHA256: $_" }

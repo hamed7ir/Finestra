@@ -32,6 +32,9 @@ namespace Finestra.UI.Controls
         public ClipPanOverlay()
         {
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+            // SDL-ENGINE — like the tab bar: dragging the pan bar must not take the keyboard away from the session
+            // (the SDL engine's child holds real Win32 focus, which a selectable control would claim on click).
+            SetStyle(ControlStyles.Selectable, false);
             TabStop = false;
         }
 

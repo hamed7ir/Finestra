@@ -29,6 +29,10 @@ namespace Finestra.Core
         // SINGLE device trip can confirm whether that heuristic is the reason detection never fires. #if DEBUG
         // UI only (see AppSettingsForm) — the field itself is harmless to carry in Release (never surfaced).
         public bool   KeyboardIgnoreHardwareCheck { get; set; } = false;
+        /// <summary>SDL-ENGINE — the input mode a new RDP session starts in: Auto (touch mode on a machine with a
+        /// touch screen, mouse mode otherwise) | Touch | Mouse. The bar's Touch/Mouse toggle stores the last
+        /// choice here, app-wide; it never rewrites a saved connection. See <see cref="TouchInput"/>.</summary>
+        public string RdpInputMode { get; set; } = "Auto";
 
         /// <summary>The "defaults for new servers" profile — a new Connection inherits this (resolution + the
         /// rest). Editing it in Settings does NOT affect existing servers (they carry their own SettingsProfile).</summary>

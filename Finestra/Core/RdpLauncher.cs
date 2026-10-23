@@ -17,6 +17,9 @@ namespace Finestra.Core
         public string ArgsForDisplay;   // safe to show/log (no password when UsedStdin)
         public bool UsedStdin;
         public string WfreerdpPath;
+        /// <summary>SDL-ENGINE — the engine that ran is the SDL client with Finestra's module
+        /// (<see cref="EngineCapabilities.IsFinestraSdl"/>), not wfreerdp.</summary>
+        public bool Sdl;
         public string Error;
         public bool Ok => Process != null && Error == null;
     }
@@ -65,6 +68,7 @@ namespace Finestra.Core
             var t = new List<string>();
             var s = cp.Settings ?? new SettingsProfile();
             bool embed = parentWindow != IntPtr.Zero;
+            bool sdl = EngineCapabilities.IsFinestraSdl(enginePath);
 
             // ── target ──
             t.Add("/v:" + cp.Host);
@@ -85,8 +89,12 @@ namespace Finestra.Core
                 var sz = ResolveEmitSize(s, primaryW, primaryH);
                 if (sz.Width > 0 && sz.Height > 0) { t.Add("/w:" + sz.Width); t.Add("/h:" + sz.Height); }
             }
-            if (s.MultiMon) t.Add("/multimon");
-            if (s.Span) t.Add("+span");
+            // SDL-ENGINE — an embedded SDL session is ONE window inside our panel. /multimon and +span make the SDL
+            // client open a window per monitor (sdl_context.cpp createWindows), and only the first can be the
+            // embedded child — the rest would be stray top-level windows. They stay for wfreerdp and shell-out.
+            bool oneWindow = sdl && embed;
+            if (s.MultiMon && !oneWindow) t.Add("/multimon");
+            if (s.Span && !oneWindow) t.Add("+span");
 
             // ── oversize behaviour: what happens when the host window is LARGER than the session ──
             // Exactly ONE flag — wfreerdp rejects the two together ("Smart sizing and dynamic resolution are
@@ -156,6 +164,18 @@ namespace Finestra.Core
                 t.Add(cam);
             }
 
+            // ── SDL-ENGINE: switches only the SDL client has (wfreerdp rejects an unknown switch, so never for it) ──
+            if (sdl)
+            {
+                // Real multi-touch to the server (MS-RDPEI). The channel is negotiated at connect only, so it is
+                // always requested: the session's Touch/Mouse switch is a live pipe command, and touch mode with
+                // no channel would fall back to FreeRDP's touch-to-mouse emulation (client/common/client.c).
+                t.Add("/multitouch");
+                // Follow the OS screen-saver/display-off policy, as wfreerdp does. SDL's default keeps the local
+                // display awake for as long as any session is open — on a tablet, a battery and lock-out change.
+                t.Add("+sdl-allow-screensaver");
+            }
+
             // ── security ──
             string sec = SecurityValue(s.Security);
             if (sec != null) t.Add(sec);
@@ -185,6 +205,7 @@ namespace Finestra.Core
                 return r;
             }
 
+            r.Sdl = EngineCapabilities.IsFinestraSdl(exe);
             var tokens = BuildTokens(cp, primaryW, primaryH, useStdin, parentWindow, exe);
             string args = JoinArgs(tokens);
 
@@ -230,9 +251,19 @@ namespace Finestra.Core
                         FileLog.Line("[CAMERA] H264 bitrate = " + camKbps + " kbps (FREERDP_H264_BITRATE)");
                     }
                 }
+                // SDL-ENGINE — SDL picks its process DPI awareness from this hint (SDL_hints.c reads hints from the
+                // environment) and otherwise declares per-monitor-v2. The engine's window is a CHILD of ours, in
+                // another process: both must agree, or Windows scales one against the other and sizes and touch
+                // points stop matching. So the engine is told exactly what Finestra itself declared.
+                if (r.Sdl)
+                {
+                    string dpi = HostDpiAwarenessHint();
+                    if (dpi != null) psi.EnvironmentVariables["SDL_WINDOWS_DPI_AWARENESS"] = dpi;
+                }
                 var proc = new Process { StartInfo = psi };   // FRDP-FIXSWEEP B17 — dropped dead EnableRaisingEvents (no Exited handler; lifecycle is HasExited-polled in ChildTick)
-                proc.OutputDataReceived += (s, e) => { if (e.Data != null) FileLog.Line("[wfreerdp] " + e.Data); };
-                proc.ErrorDataReceived += (s, e) => { if (e.Data != null) FileLog.Line("[wfreerdp] " + e.Data); };
+                string tag = "[" + (Path.GetFileNameWithoutExtension(exe) ?? "engine") + "] ";   // [wfreerdp] / [sdl-freerdp]
+                proc.OutputDataReceived += (s, e) => { if (e.Data != null) FileLog.Line(tag + e.Data); };
+                proc.ErrorDataReceived += (s, e) => { if (e.Data != null) FileLog.Line(tag + e.Data); };
 
                 FileLog.Line("[LAUNCH] " + exe + " " + r.ArgsForDisplay + (useStdin ? "   (password via stdin)" : "   (password via /p)"));
                 proc.Start();
@@ -244,14 +275,22 @@ namespace Finestra.Core
                 {
                     try
                     {
-                        // FreeRDP /from-stdin prompts for the MISSING credentials in order: username, domain,
+                        // wfreerdp's /from-stdin prompts for the MISSING credentials in order: username, domain,
                         // password. We put /u and /d on the command line when set, so feed only what's missing,
-                        // then the password — in that exact order. Write RAW UTF-8 bytes with '\n' line endings
-                        // straight to the pipe: this guarantees NO BOM (a StreamWriter preamble would corrupt the
-                        // first field) and no '\r' (which would corrupt the password on some servers).
+                        // then the password — in that exact order.
+                        // SDL-ENGINE — the SDL client reads exactly ONE line, and it is the password
+                        // (sdl_authenticate_ex, dialogs/sdl_dialogs.cpp); username and domain come only from /u /d.
+                        // Fed wfreerdp's lines, it would take the blank DOMAIN line as the password and sign in with
+                        // an empty one. With no username it shows its own credentials window.
+                        // Write RAW UTF-8 bytes with '\n' line endings straight to the pipe: this guarantees NO BOM
+                        // (a StreamWriter preamble would corrupt the first field) and no '\r' (which would corrupt
+                        // the password on some servers).
                         var lines = new List<string>();
-                        if (string.IsNullOrWhiteSpace(cp.Username)) lines.Add(cp.Username ?? "");
-                        if (string.IsNullOrWhiteSpace(cp.Domain)) lines.Add(cp.Domain ?? "");
+                        if (!r.Sdl)
+                        {
+                            if (string.IsNullOrWhiteSpace(cp.Username)) lines.Add(cp.Username ?? "");
+                            if (string.IsNullOrWhiteSpace(cp.Domain)) lines.Add(cp.Domain ?? "");
+                        }
                         lines.Add(password ?? "");
                         var sb = new StringBuilder();
                         foreach (var l in lines) sb.Append(l).Append('\n');
@@ -333,7 +372,7 @@ namespace Finestra.Core
             FileLog.Line("[ENGINE-OVERRIDE] WARNING - running the CONFIGURED engine instead of the one bundled"
                 + " with this copy.  configured=" + configured
                 + "  bundled=" + (string.IsNullOrEmpty(bundled) ? "(none for this CPU)" : bundled)
-                + "  -- clear 'Path to wfreerdp.exe' in Settings to go back to the bundled engine.");
+                + "  -- clear 'Path to the RDP engine' in Settings to go back to the bundled engine.");
         }
 
         /// <summary>The detected OS architecture as an engine-folder key: "x64" | "x86" | "arm64" | "arm" |
@@ -388,9 +427,14 @@ namespace Finestra.Core
                 }
                 catch { }
             }
-            note += "No RDP engine for this CPU — expected engine\\" + sub + "\\wfreerdp.exe beside the app.";
+            note += "No RDP engine for this CPU: expected engine\\" + sub + "\\" + EngineExe + " beside the app.";
             return null;
         }
+
+        /// <summary>SDL-ENGINE — the bundled engine's file name (FreeRDP's SDL client). wfreerdp.exe is still
+        /// FOUND (see EngineCandidates) — a user-supplied engine\x86\ engine, a private build and an
+        /// older bundle all carry one — but it is no longer what a public bundle ships.</summary>
+        public const string EngineExe = "sdl-freerdp.exe";
 
         /// <summary>engine\&lt;sub&gt;\wfreerdp.exe is the deploy bundle layout and is what a shipped bundle always
         /// hits; the ..\freerdp-engine\ entries are dev-tree fallbacks so a DEBUG run from bin\Debug\ finds the
@@ -399,13 +443,39 @@ namespace Finestra.Core
         /// pre-move C: sibling name — which resolves to nothing since the move, making every fallback dead.
         /// Bundle behaviour is unaffected either way: engine\&lt;sub&gt;\ is tried first and wins.
         /// NOTE x86 is deliberately NOT bundled (see installer\anycpu\engine-x86-README.txt); the selector arm
-        /// and this fallback stay so a user-supplied engine\x86\wfreerdp.exe still works.</summary>
+        /// and this fallback stay so a user-supplied engine\x86\wfreerdp.exe still works.
+        /// SDL-ENGINE — in each folder the SDL engine comes first and wfreerdp.exe second: the bundle ships
+        /// sdl-freerdp.exe, while a user-supplied x86 engine, a private build and a
+        /// copy unpacked over an older bundle carry wfreerdp.exe. The dev-tree SDL builds come before the older
+        /// wfreerdp dev builds for the same reason.</summary>
         private static IEnumerable<string> EngineCandidates(string sub)
         {
+            yield return @"engine\" + sub + @"\" + EngineExe;
             yield return @"engine\" + sub + @"\wfreerdp.exe";
+            if (sub == "x64") yield return @"..\..\..\..\finestra-forks\build-x64-3.32-sdl\client\SDL\SDL3\" + EngineExe;
+            if (sub == "arm") yield return @"..\..\..\..\finestra-forks\build-rt-3.32-sdl-rt21\client\SDL\SDL3\" + EngineExe;
             if (sub == "x64") yield return @"..\..\..\..\freerdp-engine\build-x64\client\Windows\cli\wfreerdp.exe";
             if (sub == "x86") yield return @"..\..\..\..\freerdp-engine\build-x86\client\Windows\cli\wfreerdp.exe";
             if (sub == "arm") yield return @"..\..\..\..\freerdp-engine\build-rt\client\Windows\cli\wfreerdp.exe";
+        }
+
+        [System.Runtime.InteropServices.DllImport("shcore.dll")] private static extern int GetProcessDpiAwareness(IntPtr hprocess, out int value);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool IsProcessDPIAware();
+
+        /// <summary>SDL-ENGINE — Finestra's OWN DPI awareness, as an SDL_WINDOWS_DPI_AWARENESS value ("unaware" |
+        /// "system" | "permonitor"), read from the process rather than from settings so it can never disagree
+        /// with what Program.Main actually declared. shcore's reader is Windows 8.1+ (RT included); Windows 7
+        /// falls back to user32's yes/no. null = could not tell, set nothing.</summary>
+        internal static string HostDpiAwarenessHint()
+        {
+            try
+            {
+                int v;
+                if (GetProcessDpiAwareness(IntPtr.Zero, out v) == 0)
+                    return v == 0 ? "unaware" : v == 1 ? "system" : "permonitor";
+            }
+            catch { /* no shcore.dll (Windows 7) */ }
+            try { return IsProcessDPIAware() ? "system" : "unaware"; } catch { return null; }
         }
 
         /// <summary>Reads the PE machine type (COFF header) of a binary; 0 on any failure.</summary>

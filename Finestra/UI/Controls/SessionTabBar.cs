@@ -31,6 +31,11 @@ namespace Finestra.UI.Controls
         void SetReconnect(bool visible, bool busy);
         /// <summary>The Reconnect button was clicked (only fires when visible + not busy).</summary>
         event Action ReconnectClicked;
+        /// <summary>SDL-ENGINE — show/hide the Touch/Mouse switch for the active tab, and which mode it is in.
+        /// One call, so the bar never shows a half-updated state.</summary>
+        void SetTouch(bool visible, bool touchOn);
+        /// <summary>The Touch/Mouse switch was pressed (only fires when visible).</summary>
+        event Action TouchToggled;
     }
 
     /// <summary>
@@ -66,6 +71,8 @@ namespace Finestra.UI.Controls
         public event Action FullscreenToggle;
         /// <summary>FRDP-RECONNECT — the Reconnect button was clicked (SSH/FTP dropped tab).</summary>
         public event Action ReconnectClicked;
+        /// <summary>SDL-ENGINE — the Touch/Mouse switch was pressed.</summary>
+        public event Action TouchToggled;
         /// <summary>Press on the bar background (hit nothing). e.Clicks==2 means a double-press.</summary>
         public event Action<MouseEventArgs> BackgroundMouseDown;
         /// <summary>Tear this tab out into its own window (FRDP-TEAROFF). Raised by a middle-click on the tab.</summary>
@@ -89,13 +96,14 @@ namespace Finestra.UI.Controls
         private bool _paused, _maximized, _fullscreen;
         private bool _pauseVisible = true;   // hidden while an SSH tab is active
         private bool _reconVisible, _reconBusy;   // FRDP-RECONNECT — the Reconnect button state (active dropped SSH/FTP tab)
+        private bool _touchVisible, _touchOn;     // SDL-ENGINE — the Touch/Mouse switch (active RDP tab, SDL engine)
 
         private Rectangle[] _tabRects = new Rectangle[0];
         private Rectangle[] _tabCloseRects = new Rectangle[0];
         // FIN-SSH-TAB-MENU — SSH-only "⋮" (vertical ellipsis) so touch users (no right-click gesture) can discover
         // and reach the per-tab quick menu. Rectangle.Empty for non-SSH tabs — never drawn, never hit-tested.
         private Rectangle[] _tabMenuRects = new Rectangle[0];
-        private Rectangle _addRect, _statsRect, _pauseRect, _fsRect, _minRect, _restoreRect, _closeRect, _reconnectRect;
+        private Rectangle _addRect, _statsRect, _pauseRect, _fsRect, _minRect, _restoreRect, _closeRect, _reconnectRect, _touchRect;
 
         public SessionTabBar()
         {
@@ -116,6 +124,7 @@ namespace Finestra.UI.Controls
         public void SetMaximized(bool maximized) { if (_maximized == maximized) return; _maximized = maximized; Invalidate(); }
         public void SetFullscreen(bool fullscreen) { if (_fullscreen == fullscreen) return; _fullscreen = fullscreen; Invalidate(); }
         public void SetReconnect(bool visible, bool busy) { if (_reconVisible == visible && _reconBusy == busy) return; _reconVisible = visible; _reconBusy = busy; Recalc(); Invalidate(); }
+        public void SetTouch(bool visible, bool touchOn) { if (_touchVisible == visible && _touchOn == touchOn) return; _touchVisible = visible; _touchOn = touchOn; Recalc(); Invalidate(); }
 
         protected override void OnResize(EventArgs e) { base.OnResize(e); Recalc(); }
 
@@ -126,6 +135,10 @@ namespace Finestra.UI.Controls
             _minRect = new Rectangle(Width - 3 * BtnW, 0, BtnW, BarHeight);
             _fsRect = new Rectangle(Width - 4 * BtnW, 0, BtnW, BarHeight);
             _pauseRect = new Rectangle(Width - 5 * BtnW, 0, BtnW, BarHeight);
+            // SDL-ENGINE — the Touch/Mouse switch sits left of Pause, a cell of the same size as its peers. It is only
+            // shown for a LIVE session (never while Reconnect is up), and Reconnect spans the pause cell, so the two
+            // never overlap: the host shows one or the other.
+            _touchRect = new Rectangle(Width - 6 * BtnW, 0, BtnW, BarHeight);
             _reconnectRect = new Rectangle(_fsRect.Left - ReconW, 5, ReconW - 6, BarHeight - 10);   // FRDP-RECONNECT — left of FS (the free SSH/FTP pause slot)
             // The readout must not run into whatever sits to its right. Its right edge was previously the
             // NEXT CONTROL'S LEFT EDGE EXACTLY - zero gap - so a full-width status string ended flush
@@ -139,7 +152,7 @@ namespace Finestra.UI.Controls
             int statsW = StatsW, gap = StatsGap;
             try { double s = DeviceDpi / 96.0; statsW = (int)Math.Round(StatsW * s); gap = (int)Math.Round(StatsGap * s); }
             catch { /* pre-4.7 or no handle yet - the unscaled constants still render, just tighter */ }
-            int statsRight = (_reconVisible ? _reconnectRect.Left : _pauseRect.Left) - gap;
+            int statsRight = (_reconVisible ? _reconnectRect.Left : _touchVisible ? _touchRect.Left : _pauseRect.Left) - gap;
             _statsRect = new Rectangle(statsRight - statsW, 0, statsW, BarHeight);
 
             var tabs = new List<Rectangle>();
@@ -220,6 +233,7 @@ namespace Finestra.UI.Controls
                     | TextFormatFlags.EndEllipsis);
 
             if (_reconVisible) DrawReconnect(g, accent);   // FRDP-RECONNECT — the active dropped SSH/FTP tab
+            if (_touchVisible && !_reconVisible) DrawTouch(g, _touchRect, _touchOn, accent);   // SDL-ENGINE
             if (_pauseVisible) DrawPause(g, _pauseRect, _paused);   // hidden for SSH tabs (no suppress-output)
             DrawFsGlyph(g, _fsRect, _fullscreen);
             DrawGlyph(g, _minRect, 'm');
@@ -297,6 +311,56 @@ namespace Finestra.UI.Controls
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
         }
 
+        /// <summary>SDL-ENGINE — the Touch/Mouse switch shows the CURRENT mode: a pointing hand on a lit backplate in
+        /// touch mode, a pointer arrow on the plain bar in mouse mode ("lit = touch"). Outlined GDI+ paths only, no
+        /// font glyphs. (The first touch glyph, a dot with two ripples above it, read as a Wi-Fi symbol.)</summary>
+        private static void DrawTouch(Graphics g, Rectangle r, bool touchOn, Color accent)
+        {
+            int cx = r.Left + r.Width / 2, cy = r.Top + r.Height / 2;
+            if (touchOn)
+            {
+                var plate = new Rectangle(cx - 16, cy - 14, 32, 28);
+                using (var b = new SolidBrush(Blend(accent, Color.White, 0.26f)))
+                using (var path = DrawHelper.RoundedRect(plate, 6)) g.FillPath(b, path);
+                using (var hand = HandPath(cx - 8f, cy - 11f))
+                using (var p = new Pen(Color.White, 1.6f) { LineJoin = LineJoin.Round })
+                    g.DrawPath(p, hand);
+            }
+            else
+            {
+                // a classic pointer arrow, tip at the top left
+                var pts = new[]
+                {
+                    new Point(cx - 5, cy - 9), new Point(cx - 5, cy + 7), new Point(cx - 1, cy + 3),
+                    new Point(cx + 2, cy + 9), new Point(cx + 4, cy + 8), new Point(cx + 1, cy + 2), new Point(cx + 6, cy + 2),
+                };
+                using (var p = new Pen(Color.White, 1.6f) { LineJoin = LineJoin.Round })
+                    g.DrawPolygon(p, pts);
+            }
+        }
+
+        /// <summary>A pointing hand in a 16 x 22 box with its top-left at (x, y): the index finger raised, three
+        /// folded fingers, the thumb at the left - the shape of the Windows link-select cursor.</summary>
+        private static GraphicsPath HandPath(float x, float y)
+        {
+            var p = new GraphicsPath();
+            p.AddArc(x + 4f, y + 0f, 4f, 4f, 180, 180);           // index fingertip
+            p.AddLine(x + 8f, y + 2f, x + 8f, y + 10f);           // index finger, right side
+            p.AddArc(x + 8f, y + 8.5f, 3f, 3f, 180, 180);         // middle knuckle
+            p.AddArc(x + 11f, y + 9.2f, 2.8f, 3f, 180, 180);      // ring knuckle
+            p.AddArc(x + 13.8f, y + 10f, 2.2f, 3f, 180, 180);     // little knuckle
+            p.AddLine(x + 16f, y + 11.5f, x + 16f, y + 15.5f);    // palm, right side
+            p.AddArc(x + 10f, y + 11f, 6f, 10f, 0, 90);           // palm, bottom right
+            p.AddLine(x + 13f, y + 21f, x + 7.5f, y + 21f);       // wrist
+            p.AddLine(x + 7.5f, y + 21f, x + 4.5f, y + 18f);      // palm, bottom left
+            p.AddLine(x + 4.5f, y + 18f, x + 1.2f, y + 14.6f);    // thumb, underside
+            p.AddArc(x + 0f, y + 12.2f, 3f, 3f, 135, 180);        // thumb tip
+            p.AddLine(x + 3.1f, y + 13.3f, x + 4f, y + 14f);      // thumb, top
+            p.AddLine(x + 4f, y + 14f, x + 4f, y + 2f);           // index finger, left side
+            p.CloseFigure();
+            return p;
+        }
+
         private static void DrawPause(Graphics g, Rectangle r, bool paused)
         {
             int cx = r.Left + r.Width / 2, cy = r.Top + r.Height / 2;
@@ -346,6 +410,7 @@ namespace Finestra.UI.Controls
             if (_minRect.Contains(e.Location)) { MinimizeClicked?.Invoke(); return; }
             if (_fsRect.Contains(e.Location)) { FullscreenToggle?.Invoke(); return; }
             if (_pauseVisible && _pauseRect.Contains(e.Location)) { PauseToggled?.Invoke(); return; }
+            if (_touchVisible && !_reconVisible && _touchRect.Contains(e.Location)) { TouchToggled?.Invoke(); return; }   // SDL-ENGINE
             if (_addRect.Contains(e.Location)) { AddClicked?.Invoke(); return; }
             for (int i = 0; i < _tabRects.Length; i++)
             {

@@ -84,6 +84,7 @@
     <Reference Include="Microsoft.Extensions.Logging.Abstractions"><HintPath>lib\Microsoft.Extensions.Logging.Abstractions.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="Microsoft.Extensions.DependencyInjection.Abstractions"><HintPath>lib\Microsoft.Extensions.DependencyInjection.Abstractions.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="Microsoft.Bcl.AsyncInterfaces"><HintPath>lib\Microsoft.Bcl.AsyncInterfaces.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="Microsoft.Bcl.Cryptography"><HintPath>lib\Microsoft.Bcl.Cryptography.dll</HintPath><Private>true</Private></Reference>
     <Reference Include="System.Diagnostics.DiagnosticSource"><HintPath>lib\System.Diagnostics.DiagnosticSource.dll</HintPath><Private>true</Private></Reference>
   </ItemGroup>
   <!-- FTP track (FRDP-FTP-BUILD-1): FluentFTP 54.2.0 net462 — MIT, ZERO dependencies (refs only mscorlib/System/
@@ -116,6 +117,7 @@
     <Compile Include="Core\SshSession.cs" />
     <Compile Include="Core\StatsPipe.cs" />
     <Compile Include="Core\StoragePaths.cs" />
+    <Compile Include="Core\TouchInput.cs" />
     <Compile Include="Helpers\DisplayInfo.cs" />
     <Compile Include="Helpers\DrawHelper.cs" />
     <Compile Include="Helpers\FileLog.cs" />

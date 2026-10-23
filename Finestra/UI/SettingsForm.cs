@@ -107,8 +107,14 @@ namespace Finestra.UI
             // FIN-RDPECAM-HWENC — GPU hardware H.264 encoder vs software openh264. Auto/Hardware prefer the GPU
             // (fail-closed to software); Software forces openh264. The GPU path moves encode off the CPU, which
             // is what makes 1080p smooth on weak CPUs.
+            // ⚠ The "Software (openh264)" choice only exists if the ENGINE was compiled with WITH_OPENH264.
+            // Ask the engine (/buildconfig) rather than assume, and say so in the label when it cannot: a
+            // form that offers a setting the engine ignores is worse than one that admits the limit.
             ChoiceRow cameraEncoder = camOk
-                ? Choice("Camera encoder", CameraEncoderUi.Options, (int)_s.CameraEncoder,
+                ? Choice("Camera encoder",
+                         CameraEncoderUi.OptionsFor(
+                             EngineCapabilities.IsOn(RdpLauncher.ResolveWfreerdpPath(), "WITH_OPENH264")),
+                         (int)_s.CameraEncoder,
                          i => _s.CameraEncoder = (CameraEncoderOpt)i)
                 : null;
             ChoiceRow cameraBitrate = camOk

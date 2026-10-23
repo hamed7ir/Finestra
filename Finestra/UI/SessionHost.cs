@@ -120,6 +120,16 @@ namespace Finestra.UI
             public IntPtr Child;
             public StatsPipe Stats;
             public bool Paused;
+            /// <summary>SDL-ENGINE — this connection runs the SDL engine (Finestra's module), not wfreerdp: keyboard
+            /// focus goes to the CHILD (not RdpParent), the size follows the window by itself (no WM_EXITSIZEMOVE
+            /// nudges), and there is a touch mode. Decided from the engine binary at launch.</summary>
+            public bool Sdl;
+            /// <summary>SDL-ENGINE — the input mode the ENGINE reports on its STATS line; null until it first does
+            /// (and forever for wfreerdp, which has no touch mode — that null is what hides the switch).</summary>
+            public bool? TouchOn;
+            /// <summary>SDL-ENGINE — the server's multi-touch channel (MS-RDPEI) is up. Without it, touch mode
+            /// falls back to FreeRDP's touch-to-mouse emulation.</summary>
+            public bool Rdpei;
             public string LastStats = "—";
             /// <summary>The exact /w × /h wfreerdp was launched with — compared against the embed area to decide
             /// whether an OversizeMode.Dynamic session needs a one-shot renegotiation once it embeds.</summary>
@@ -208,6 +218,11 @@ namespace Finestra.UI
             public int ConnectTicks { get { return Conn != null ? Conn.ConnectTicks : 0; } set { if (Conn != null) Conn.ConnectTicks = value; } }
             public int? ExitCode { get { return Conn?.ExitCode; } }
             public string DisconnectReason { get { return Conn?.DisconnectReason; } }
+            public bool IsSdl { get { return Conn != null && Conn.Sdl; } }
+            /// <summary>SDL-ENGINE — the input mode the USER wants for this tab (true = touch). Tab-scoped, not
+            /// connection-scoped: a reconnect starts a new engine in mouse mode, and the first STATS line of the new
+            /// connection re-applies this (OnInputState). Starts from <see cref="TouchInput.StartInTouchMode"/>.</summary>
+            public bool TouchWanted;
             public void TouchStats() { Conn?.TouchStats(); }
             public double SecondsSinceLastStats() { return Conn != null ? Conn.SecondsSinceLastStats() : -1; }
 
@@ -317,6 +332,7 @@ namespace Finestra.UI
             _tabBar.TabDragDrop += OnTabDragDrop;
             _tabBar.TabRightClicked += OnTabRightClick;
             _tabBar.ReconnectClicked += OnReconnectClicked;   // FRDP-RECONNECT
+            _tabBar.TouchToggled += OnTouchToggled;           // SDL-ENGINE
 
             _bar = new OverlayBar { Owner = this };
             _bar.TabClicked += SetActive;
@@ -329,6 +345,7 @@ namespace Finestra.UI
             _bar.FullscreenToggle += OnFullscreenToggle;
             _bar.TabRightClicked += OnTabRightClick;
             _bar.ReconnectClicked += OnReconnectClicked;   // FRDP-RECONNECT
+            _bar.TouchToggled += OnTouchToggled;           // SDL-ENGINE
 
             _hoverTimer = new Timer { Interval = 60 };
             _hoverTimer.Tick += HoverTick;
@@ -584,6 +601,15 @@ namespace Finestra.UI
         {
             base.OnActivated(e);
             _lastActiveHost = this;
+            // SDL-ENGINE — on activation WinForms gives the keyboard back to its own ActiveControl, and the SDL
+            // engine's child (a window of another process) is never that control: after Alt+Tab, a closed dialog or
+            // a restore, typing would land in the host instead of the session. Hand it back once the activation
+            // has settled. wfreerdp keeps its own path (its hook watches the RdpParent panel's focus).
+            if (_active >= 0 && _active < _sessions.Count && _sessions[_active].IsSdl && _sessions[_active].Child != IntPtr.Zero)
+            {
+                var a = _sessions[_active];
+                try { BeginInvoke((Action)(() => { if (!IsDisposed && _active >= 0 && _active < _sessions.Count && _sessions[_active] == a) FocusSession(a); })); } catch { }
+            }
             // FIN-SINGLETON trap 2 (one-shot): our TopMost was dropped so an activated manager could
             // genuinely surface over this fullscreen host — re-assert it now that the user returned here.
             // ONE-SHOT by flag so the fullscreen modal-confirm dance (which also drops TopMost) is untouched.
@@ -647,7 +673,7 @@ namespace Finestra.UI
             {
                 _embedHost.Controls.Remove(rdpParent);
                 rdpParent.Dispose();
-                MessageBox.Show(this, res.Error ?? "Failed to launch wfreerdp.", "Finestra", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(this, res.Error ?? "Failed to launch the RDP engine.", "Finestra", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
             var sess = RdpLauncher.ResolveEmitSize(cp.Settings, native.Width, native.Height);
@@ -656,7 +682,8 @@ namespace Finestra.UI
             // FIN-RDP-RECONNECT-2 C1 — the connection is constructed as one object. A reconnect is the same
             // single assignment against an existing Session, which is why the split exists.
             _sessions.Add(new Session { Profile = cp, Owner = this, RdpParent = rdpParent,
-                                        Conn = new RdpConnection { Proc = res.Process, Emitted = sess } });
+                                        TouchWanted = TouchInput.StartInTouchMode(),
+                                        Conn = new RdpConnection { Proc = res.Process, Emitted = sess, Sdl = res.Sdl } });
             RefreshTabs();
             SetActive(_sessions.Count - 1);
         }
@@ -764,7 +791,7 @@ namespace Finestra.UI
             if (!res.Ok)
             {
                 FileLog.Line("[HOST] reconnect FAILED to launch — " + s.Name + ": " + (res.Error ?? "?"));
-                MessageBox.Show(this, res.Error ?? "Failed to launch wfreerdp.", "Finestra", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show(this, res.Error ?? "Failed to launch the RDP engine.", "Finestra", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;   // stays Disconnected, so the button stays offered
             }
 
@@ -775,7 +802,7 @@ namespace Finestra.UI
             // ★ THE POINT OF THE C1 SPLIT: one assignment, and every field of the new connection is at its
             // initial value by construction — Child zero, Stats null, phase Connecting, all the fit/pan
             // bookkeeping fresh. Nothing to reset by hand and nothing to forget.
-            s.Conn = new RdpConnection { Proc = res.Process, Emitted = sess };
+            s.Conn = new RdpConnection { Proc = res.Process, Emitted = sess, Sdl = res.Sdl };   // TouchWanted is the tab's: kept
 
             if (IndexOf(s) == _active) { s.RdpParent.Visible = true; try { Ui.SetStats(RdpBarText(s)); } catch { } }
             PushReconnect(s);   // now Connecting → the button hides itself
@@ -859,13 +886,13 @@ namespace Finestra.UI
                     s.EverEmbedded = true;                    // phase inference: embedded ⇒ not a "failed" connect
                     FileLog.Line("[HOST] child EMBEDDED hwnd=0x" + child.ToInt64().ToString("X") + " pid=" + s.Proc.Id + " mode=" + Mode);
                     StartStats(s);
-                    FitChild(child);
+                    FitChild(s);
                     bool nowActive = IndexOf(s) == _active;
                     ShowWindow(child, nowActive ? SW_SHOW : SW_HIDE);
                     s.RdpParent.Visible = nowActive;   // FRDP-RDP-KBD-FIX — an inactive session's panel is plain-painted
                     // and fully overlaps every sibling (all Dock=Fill); left visible it opaquely covers the active
                     // session's real child underneath, regardless of z-order (measured: device-reported black tab).
-                    if (nowActive) FocusChild(s.RdpParent.Handle);
+                    if (nowActive) FocusSession(s);
                     KeepBarOnTop();
                     if (IndexOf(s) == _active) RefreshRdpPanOverlay();   // FIN-KBD-FREEZE-SCROLL — connecting while already frozen is a real (if narrow) case
                 }
@@ -919,6 +946,12 @@ namespace Finestra.UI
                 }
             }
 
+            // SDL-ENGINE — a background tab's SDL child must stay HIDDEN: hidden is what makes the engine suppress
+            // the server's output for it (sdl_disp.cpp, HIDDEN → suppress), and a child whose connection completed
+            // while its tab was in the background shows itself on its first frame. Cheap, self-healing re-hide.
+            if (s.IsSdl && IndexOf(s) != _active && (GetWindowLong(s.Child, GWL_STYLE) & WS_VISIBLE) != 0)
+                ShowWindow(s.Child, SW_HIDE);
+
             if (WindowState == FormWindowState.Minimized) return;
             if (_sizeFrozen) return;   // FIN-KBD-FREEZE — the watchdog re-fit/renegotiate is exactly what freezing must suppress
 
@@ -926,14 +959,17 @@ namespace Finestra.UI
             // which can land AFTER our first FitChild and shrink the child back to the session size (a 1280x720 session
             // in a 1920x1080 host = desktop in the top-left of a black panel, indistinguishable from letterbox). Keep
             // re-fitting until the child really matches, then count how long it has held.
-            if (!ChildFitsEmbed(s.Child)) { FitChild(s.Child); s.FitStableTicks = 0; }
+            if (!ChildFitsEmbed(s.Child)) { FitChild(s); s.FitStableTicks = 0; }
             else s.FitStableTicks++;
 
             // A Dynamic session whose negotiated size differs from the area it landed in renegotiates ONCE — the only
             // way Dynamic can act in the FULLSCREEN host, which never resizes. Armed only after the child is correctly
             // sized and settled, so wf_send_resize reads the right client_width and the disp channel has opened (a send
             // before that fails, and the engine records its dedupe key even on failure — wf_event.c:364 — wedging it).
-            if (!s.DynFitArmed && IsDynamic(s) && s.Emitted != _embedHost.ClientSize
+            // SDL-ENGINE — never for the SDL engine: it sends the layout for its window's real size by itself, when
+            // its display channel comes up and on every resize, and an unpaired WM_EXITSIZEMOVE upsets SDL's own
+            // move/size-loop bookkeeping (SDL_windowsevents.c).
+            if (!s.IsSdl && !s.DynFitArmed && IsDynamic(s) && s.Emitted != _embedHost.ClientSize
                 && s.FitStableTicks >= DynFitSettleTicks)
             {
                 s.DynFitArmed = true;
@@ -984,6 +1020,12 @@ namespace Finestra.UI
                     var o = s.Owner;
                     if (o != null && !o.IsDisposed) o.OnStats(s, rtt, bw, jit);
                 };
+                // SDL-ENGINE — same routing: the engine's input mode, once on the first line and on every change.
+                s.Stats.InputState += (touch, rdpei) =>
+                {
+                    var o = s.Owner;
+                    if (o != null && !o.IsDisposed) o.OnInputState(s, touch, rdpei);
+                };
             }
             catch (Exception ex) { FileLog.Line("[STATS] start failed: " + ex.Message); }
         }
@@ -999,11 +1041,67 @@ namespace Finestra.UI
                 BeginInvoke((Action)(() =>
                 {
                     if (IsDisposed) return;   // FRDP-FIXSWEEP B11 — guard the queued delegate too (parity with OnSshStatus/OnFtpStatus)
-                    if (s.Phase == RdpPhase.Connecting) s.Phase = RdpPhase.Connected;   // first stats line = connected; stats ARE the indicator
-                    if (IndexOf(s) == _active) Ui.SetStats(RdpBarText(s));
+                    bool first = s.Phase == RdpPhase.Connecting;
+                    if (first) s.Phase = RdpPhase.Connected;   // first stats line = connected; stats ARE the indicator
+                    if (IndexOf(s) == _active)
+                    {
+                        Ui.SetStats(RdpBarText(s));
+                        if (first) PushTouch(s);   // SDL-ENGINE — Connected is one of the switch's conditions
+                    }
                 }));
             }
             catch { }
+        }
+
+        /// <summary>SDL-ENGINE — the engine reported its input mode (reader thread → UI thread). A NEW engine always
+        /// starts in mouse mode, so this is also where the tab's wanted mode is applied: on the first report of every
+        /// connection, including after a Reconnect. Re-sent only when the report differs from what is wanted, and the
+        /// report is only raised on a change, so a refusing engine cannot cause a loop.</summary>
+        private void OnInputState(Session s, bool touch, bool rdpei)
+        {
+            if (IsDisposed) return;
+            var conn = s.Conn;   // the connection this report belongs to — ignore it if a reconnect replaced it
+            try
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    if (IsDisposed || s.Conn != conn || conn == null) return;
+                    conn.TouchOn = touch;
+                    conn.Rdpei = rdpei;
+                    if (touch != s.TouchWanted && s.Stats != null)
+                    {
+                        FileLog.Line("[STATS pid=" + s.Stats.Pid + "] " + (s.TouchWanted ? "TOUCH ON" : "TOUCH OFF") + " (applying the tab's mode) — " + s.Name);
+                        s.Stats.SetTouch(s.TouchWanted);
+                    }
+                    if (IndexOf(s) == _active) PushTouch(s);
+                }));
+            }
+            catch { }
+        }
+
+        /// <summary>SDL-ENGINE — the bar's Touch/Mouse switch was pressed: flip the ACTIVE tab, tell its engine, and
+        /// remember the choice for the next session (app-wide; a saved connection is never rewritten). The bar shows
+        /// the wanted mode at once; the engine confirms within about a second (OnInputState).</summary>
+        private void OnTouchToggled()
+        {
+            if (_active < 0 || _active >= _sessions.Count) return;
+            var s = _sessions[_active];
+            if (s.IsSsh || s.IsFtp || !s.IsSdl || s.Stats == null || s.Conn == null || s.Conn.TouchOn == null) return;
+            s.TouchWanted = !s.TouchWanted;
+            s.Stats.SetTouch(s.TouchWanted);
+            TouchInput.Remember(s.TouchWanted);
+            FileLog.Line("[STATS pid=" + s.Stats.Pid + "] " + (s.TouchWanted ? "TOUCH ON" : "TOUCH OFF") + " — " + s.Name);
+            PushTouch(s);
+        }
+
+        /// <summary>SDL-ENGINE — show the Touch/Mouse switch for a live SDL session whose engine has reported its
+        /// mode, on a machine with a touch screen (without one a finger never reaches the session, so the switch
+        /// would only take bar space). Hidden for wfreerdp, SSH, FTP and any session that is not connected.</summary>
+        private void PushTouch(Session s)
+        {
+            bool visible = s != null && !s.IsSsh && !s.IsFtp && s.IsSdl && s.Phase == RdpPhase.Connected
+                           && s.Conn != null && s.Conn.TouchOn != null && TouchInput.HasTouchScreen();
+            try { Ui.SetTouch(visible, s != null && s.TouchWanted); } catch { }
         }
 
         /// <summary>The bar text for an RDP tab: a phase dot while connecting/failed/disconnected, and ONLY the stats
@@ -1120,6 +1218,7 @@ namespace Finestra.UI
                 // here too; tab-switch alone (the only previous caller) would leave a tab that dropped while
                 // focused showing no button until the user switched away and back.
                 try { PushReconnect(s); } catch { }
+                PushTouch(s);   // SDL-ENGINE — a session that stops being Connected loses the switch
             }
         }
 
@@ -1161,12 +1260,13 @@ namespace Finestra.UI
             // _embedHost.ClientSize: switching TO an RDP tab while frozen+clipped would silently un-freeze that
             // tab's size the moment it became active. RefreshRdpPanOverlay (below) re-applies this tab's own pan
             // instead, which repositions (never resizes) the child — the freeze contract holds across tab switches.
-            else if (act.Child != IntPtr.Zero) { if (!_sizeFrozen) FitChild(act.Child); FocusChild(act.RdpParent.Handle); }
+            else if (act.Child != IntPtr.Zero) { if (!_sizeFrozen) FitChild(act); FocusSession(act); }
             Ui.SetActive(i);
             Ui.SetStats(act.IsSsh ? act.Ssh.StatusText : act.IsFtp ? act.Ftp.StatusText : RdpBarText(act));   // RDP: connecting… / stats / failed
             Ui.SetPaused(act.Paused);
             Ui.SetPauseVisible(!act.IsSsh && !act.IsFtp);   // only RDP has pause/resume
             PushReconnect(act);   // FRDP-RECONNECT — show/hide the Reconnect button for the newly-active tab
+            PushTouch(act);       // SDL-ENGINE — and the Touch/Mouse switch
             KeepBarOnTop();
             RefreshRdpPanOverlay();
             FileLog.Line("[HOST] active tab=" + i + " (" + act.Name + ") of " + _sessions.Count + " mode=" + Mode);
@@ -1339,10 +1439,10 @@ namespace Finestra.UI
             s.Owner = this;
             s.FitStableTicks = 0; s.DynFitArmed = false; s.DynFitTicks = 0;   // re-evaluate fit/Dynamic in this host
             _sessions.Add(s);
-            if (s.Child != IntPtr.Zero) { FitChild(s.Child); ShowWindow(s.Child, SW_SHOW); }
+            if (s.Child != IntPtr.Zero) { FitChild(s); ShowWindow(s.Child, SW_SHOW); }
             RefreshTabs();
             SetActive(_sessions.Count - 1);
-            if (s.Child != IntPtr.Zero) FocusChild(s.RdpParent.Handle);
+            if (s.Child != IntPtr.Zero) FocusSession(s);
             FileLog.Line("[TEAR] adopted '" + s.Name + "' into " + Mode + " host; tabs now=" + _sessions.Count);
         }
 
@@ -1400,7 +1500,7 @@ namespace Finestra.UI
             _hoverTimer.Start();
             ForceForeground();
             if (_active >= 0 && _active < _sessions.Count && _sessions[_active].Child != IntPtr.Zero)
-                FocusChild(_sessions[_active].RdpParent.Handle);
+                FocusSession(_sessions[_active]);
             FileLog.Line("[HOST] restored from taskbar (fullscreen), sessions=" + _sessions.Count);
         }
 
@@ -1544,6 +1644,7 @@ namespace Finestra.UI
             Ui.SetStats(a.IsSsh ? a.Ssh.StatusText : a.IsFtp ? a.Ftp.StatusText : RdpBarText(a));
             Ui.SetPaused(a.Paused);
             Ui.SetPauseVisible(!a.IsSsh && !a.IsFtp);
+            PushTouch(a);   // SDL-ENGINE — the switch belongs to whichever bar is now showing
         }
 
         private void FocusActiveChild()
@@ -1552,7 +1653,7 @@ namespace Finestra.UI
             var a = _sessions[_active];
             if (a.IsSsh) a.Ssh.Focus();
             else if (a.IsFtp) a.Ftp.Focus();
-            else if (a.Child != IntPtr.Zero) FocusChild(a.RdpParent.Handle);
+            else if (a.Child != IntPtr.Zero) FocusSession(a);
         }
 
         /// <summary>After a presentation flip the embed area changed size; a Dynamic session must renegotiate to it.
@@ -1562,7 +1663,7 @@ namespace Finestra.UI
         private void ArmDynamicRefit()
         {
             foreach (var s in _sessions)
-                if (s.Child != IntPtr.Zero && IsDynamic(s)) s.DynFitTicks = DynFitRetries;
+                if (s.Child != IntPtr.Zero && IsDynamic(s) && !s.IsSdl) s.DynFitTicks = DynFitRetries;   // SDL: resizes itself
         }
 
         // ── window buttons ──────────────────────────────────────────────────────
@@ -1780,11 +1881,31 @@ namespace Finestra.UI
             catch { }
         }
 
+        /// <summary>SDL-ENGINE — give an RDP session the keyboard, the way ITS engine wants it.
+        ///
+        /// wfreerdp: the session's own RdpParent panel (its hook compares the focus HWND to /parent-window; see
+        /// <see cref="FocusChild"/>). SDL engine: the engine's CHILD window itself — it receives keys as ordinary
+        /// window messages (sdl_finestra.cpp sub-classes it). The child is a window of another process's thread,
+        /// and Windows already shares the input state of a parent's and child's threads; a plain SetFocus works,
+        /// and an explicit AttachThreadInput(…, false) afterwards would DETACH that sharing (measured with the
+        /// embed harness: focus held, keys arrived, with no attach call).</summary>
+        private void FocusSession(Session s)
+        {
+            if (s == null || s.Child == IntPtr.Zero) return;
+            if (!s.IsSdl) { FocusChild(s.RdpParent.Handle); return; }
+            try
+            {
+                SetForegroundWindow(Handle);
+                SetFocus(s.Child);
+            }
+            catch { }
+        }
+
         private void FitAllChildren()
         {
             if (_sizeFrozen) return;   // FIN-KBD-FREEZE — sessions pinned; content clips instead of resizing
             foreach (var s in _sessions)
-                if (s.Child != IntPtr.Zero) FitChild(s.Child);
+                if (s.Child != IntPtr.Zero) FitChild(s);
             // FitChild shows each child (SWP_SHOWWINDOW), so a hidden RDP tab can re-surface and bleed OVER an active
             // SSH/FTP tab's WinForms content (a foreign child HWND sits above WinForms siblings in z-order). Keep only
             // the ACTIVE RDP child visible — behaviour-preserving (the visible state is unchanged: active shown,
@@ -1815,14 +1936,30 @@ namespace Finestra.UI
             if (_sizeFrozen) return;   // FIN-KBD-FREEZE — no renegotiation while frozen
             foreach (var s in _sessions)
             {
-                if (s.Child == IntPtr.Zero || !IsDynamic(s)) continue;
+                if (s.Child == IntPtr.Zero || !IsDynamic(s) || s.IsSdl) continue;   // SDL: follows its window by itself
                 try { PostMessage(s.Child, WM_EXITSIZEMOVE, IntPtr.Zero, IntPtr.Zero); } catch { }
             }
         }
 
         /// <summary>Size the embedded child to fill the embed panel. This resizes the child WINDOW only — what the
         /// SESSION does about the mismatch is the user's <see cref="OversizeMode"/> choice (letterbox / scale /
-        /// renegotiate); see <see cref="NudgeDynamicResize"/> for the last one.</summary>
+        /// renegotiate); see <see cref="NudgeDynamicResize"/> for the last one.
+        /// SDL-ENGINE — the SDL engine's child is sized and nothing else: it is created borderless, it repaints on
+        /// resize by itself, and showing it is the tab switch's job. SWP_SHOWWINDOW here would flick every
+        /// BACKGROUND tab visible and hidden again on each resize step — and for the SDL engine shown/hidden is
+        /// what lifts and re-applies the server's output suppression.</summary>
+        private void FitChild(Session s)
+        {
+            if (s == null || s.Child == IntPtr.Zero) return;
+            if (!s.IsSdl) { FitChild(s.Child); return; }
+            try
+            {
+                var sz = _embedHost.ClientSize;
+                SetWindowPos(s.Child, IntPtr.Zero, 0, 0, sz.Width, sz.Height, SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            catch { }
+        }
+
         private void FitChild(IntPtr child)
         {
             try
@@ -1929,6 +2066,7 @@ namespace Finestra.UI
         // ── native ──
         private const int GWL_STYLE = -16;
         private const int WS_BORDER = 0x00800000;
+        private const int WS_VISIBLE = 0x10000000;
         private const int SW_HIDE = 0, SW_SHOW = 5;
         private const int WM_NCHITTEST = 0x0084, WM_GETMINMAXINFO = 0x0024, WM_NCLBUTTONDOWN = 0x00A1;
         private const int WM_EXITSIZEMOVE = 0x0232;   // posted to the embedded child to drive OversizeMode.Dynamic

@@ -30,6 +30,7 @@ namespace Finestra.UI
         public event Action FullscreenToggle;
         public event Action<int, System.Drawing.Point> TabRightClicked;
         public event Action ReconnectClicked;   // FRDP-RECONNECT
+        public event Action TouchToggled;       // SDL-ENGINE
 
         protected override bool ShowWithoutActivation => true;   // never steal focus from the RDP session
         protected override CreateParams CreateParams
@@ -62,6 +63,7 @@ namespace Finestra.UI
             _tab.FullscreenToggle += () => FullscreenToggle?.Invoke();
             _tab.TabRightClicked += (t, p) => TabRightClicked?.Invoke(t, p);
             _tab.ReconnectClicked += () => ReconnectClicked?.Invoke();   // FRDP-RECONNECT
+            _tab.TouchToggled += () => TouchToggled?.Invoke();           // SDL-ENGINE
             Controls.Add(_tab);
         }
 
@@ -73,6 +75,7 @@ namespace Finestra.UI
         public void SetMaximized(bool maximized) { /* the fullscreen host has no maximize state */ }
         public void SetFullscreen(bool fullscreen) => _tab.SetFullscreen(fullscreen);
         public void SetReconnect(bool visible, bool busy) => _tab.SetReconnect(visible, busy);   // FRDP-RECONNECT
+        public void SetTouch(bool visible, bool touchOn) => _tab.SetTouch(visible, touchOn);     // SDL-ENGINE
 
         /// <summary>Slide the bar down to reveal it at the given top-left, full monitor width.</summary>
         public void RevealTo(int x, int y, int width)

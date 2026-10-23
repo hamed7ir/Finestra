@@ -11,7 +11,7 @@ using Finestra.UI.Controls;
 namespace Finestra.UI
 {
     /// <summary>
-    /// App-level settings (NOT per-connection): the wfreerdp.exe path and the DPI-awareness rescue toggle.
+    /// App-level settings (NOT per-connection): the RDP engine path and the DPI-awareness rescue toggle.
     /// Theme mode lives in the hamburger menu. Persists to <see cref="AppSettings"/> (Documents\Finestra\
     /// settings.json). The DPI toggle takes effect on next launch (awareness is declared once at startup).
     /// </summary>
@@ -22,6 +22,7 @@ namespace Finestra.UI
         private readonly TextRow _path;
         private readonly ToggleRow _dpi;
         private readonly ChoiceRow _connectMode;
+        private readonly ChoiceRow _inputMode;          // SDL-ENGINE — RdpInputMode
         private readonly ChoiceRow _oversize;
         private readonly ChoiceRow _closeAction;
         private readonly ToggleRow _startup;
@@ -38,6 +39,7 @@ namespace Finestra.UI
 
         // SAME ORDER as the CloseAction enum → index == (int)value.
         private static readonly string[] CloseActionOptions = { "Ask each time", "Minimize to tray", "Exit" };
+        private static readonly string[] InputModeOptions = { "Auto", "Touch", "Mouse" };
 
         public AppSettingsForm() : base("Settings", 540, 640)
         {
@@ -52,11 +54,13 @@ namespace Finestra.UI
                 resolved = auto != null ? auto + "   (auto-detected)" : "";
             }
 
-            _path = new TextRow("Path to wfreerdp.exe", _origPath);
+            // SDL-ENGINE — the setting is still stored as WfreerdpPath (settings.json compatibility), but it takes
+            // either engine: the bundled SDL client (sdl-freerdp.exe) or a Windows-client build (wfreerdp.exe).
+            _path = new TextRow("Path to the RDP engine", _origPath);
             var browse = new RoundedButton { Text = "Browse…", Kind = RoundedButtonKind.Neutral, Height = 40, Font = FontHelper.Ui(10f, FontStyle.Bold) };
             browse.Click += (a, b) =>
             {
-                using (var ofd = new OpenFileDialog { Filter = "wfreerdp.exe|wfreerdp.exe|Executables|*.exe|All files|*.*", Title = "Locate wfreerdp.exe" })
+                using (var ofd = new OpenFileDialog { Filter = "RDP engine (sdl-freerdp.exe, wfreerdp.exe)|sdl-freerdp.exe;wfreerdp.exe|Executables|*.exe|All files|*.*", Title = "Locate the RDP engine" })
                 {
                     try { if (!string.IsNullOrEmpty(_path.Value) && File.Exists(_path.Value)) ofd.InitialDirectory = Path.GetDirectoryName(_path.Value); } catch { }
                     if (ofd.ShowDialog(this) == DialogResult.OK) _path.Value = ofd.FileName;
@@ -65,12 +69,26 @@ namespace Finestra.UI
 
             var autodetect = new TextRow("Currently resolves to", string.IsNullOrEmpty(resolved) ? "(not found — set a path)" : resolved) { Enabled = false };
 
+            // What this engine can ACTUALLY do, read from its own /buildconfig rather than assumed. Several
+            // per-connection settings (encoders, graphics pipeline) depend on engine compile-time flags,
+            // and without this the form can offer a choice the engine silently ignores. Read-only: it reports
+            // the engine, it does not change it — swap the path above to change what you get.
+            var engineCaps = new TextRow("Engine capabilities", EngineCapabilities.Summary(RdpLauncher.ResolveWfreerdpPath())) { Enabled = false };
+
             _dpi = new ToggleRow("Proportional scaling — DPI-unaware (restart required)", AppSettings.Instance.DpiUnaware);
             _connectMode = new ChoiceRow("Connect mode",
                 new[] { "Embed (tabbed) — Finestra hosts the session", "Window (single, shell-out)" },
                 string.Equals(s.ConnectMode, "Window", StringComparison.OrdinalIgnoreCase) ? 1 : 0);
             var connectHint = new TextRow("What each mode does",
-                "Embed: tabs + live stats; each connection's \"Fullscreen\" setting picks borderless fullscreen (hover bar) or a resizable window (persistent tab bar).   Window: wfreerdp opens its own plain window — no tabs, no stats.")
+                "Embed: tabs + live stats; each connection's \"Fullscreen\" setting picks borderless fullscreen (hover bar) or a resizable window (persistent tab bar).   Window: the engine opens its own plain window — no tabs, no stats.")
+                { Enabled = false };
+            // SDL-ENGINE — which mode a new RDP session's touch input starts in (the bar's toggle switches a running
+            // one and updates this). Same order as the stored values: Auto | Touch | Mouse.
+            string im = s.RdpInputMode ?? "Auto";
+            _inputMode = new ChoiceRow("Touch screen in RDP starts as", InputModeOptions,
+                im.Equals("Touch", StringComparison.OrdinalIgnoreCase) ? 1 : im.Equals("Mouse", StringComparison.OrdinalIgnoreCase) ? 2 : 0) { ValueWidth = 200 };
+            var inputHint = new TextRow("Touch vs mouse",
+                "Touch: fingers act as touch in the remote session — swipe to scroll, pinch to zoom.   Mouse: a tap clicks, a drag drags, press-and-hold right-clicks.   Auto: touch on a PC with a touch screen.")
                 { Enabled = false };
 
             _resPicker = new ResolutionPicker(_defaults);
@@ -108,8 +126,8 @@ namespace Finestra.UI
 
             var rows = new List<Control>
             {
-                new SectionHeader("wfreerdp"), _path, browse, autodetect,
-                new SectionHeader("Session"), _connectMode, connectHint,
+                new SectionHeader("RDP engine"), _path, browse, autodetect, engineCaps,
+                new SectionHeader("Session"), _connectMode, connectHint, _inputMode, inputHint,
                 new SectionHeader("Default resolution (new servers)"), _resPicker, _oversize,
                 new SectionHeader("App behaviour"), _closeAction, _startup, _logging, _kbResize,
             };
@@ -143,6 +161,7 @@ namespace Finestra.UI
             s.WfreerdpPath = newPath;
             s.DpiUnaware = _dpi.On;
             s.ConnectMode = _connectMode.SelectedIndex == 1 ? "Window" : "Embed";
+            s.RdpInputMode = _inputMode.SelectedIndex == 1 ? "Touch" : _inputMode.SelectedIndex == 2 ? "Mouse" : "Auto";
             s.CloseAction = ((CloseAction)_closeAction.SelectedIndex).ToString();
             s.RunOnStartup = _startup.On;
             s.EnableLogging = _logging.On;

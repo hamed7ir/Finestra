@@ -18,6 +18,13 @@ namespace Finestra.Core
         /// <summary>rttMs, bandwidthKbps, jitterMs — raised on the reader thread (marshal to the UI yourself).</summary>
         public event Action<int, int, int> Updated;
 
+        /// <summary>SDL-ENGINE — (touchOn, multiTouchChannelUp), raised on the reader thread on the FIRST line that
+        /// carries them and whenever either changes. Only the SDL engine's line has them
+        /// (<c>STATS rtt bw base resCnt syncCnt touch rdpei</c>, 8 tokens); wfreerdp's 6-token line never raises
+        /// this, which is how the host knows the engine has no touch mode.</summary>
+        public event Action<bool, bool> InputState;
+        private int _touch = -1, _rdpei = -1;
+
         private NamedPipeClientStream _pipe;
         private StreamWriter _writer;
         private readonly Thread _thread;
@@ -66,6 +73,13 @@ namespace Finestra.Core
                         if (_prevRtt >= 0) _jitter += (Math.Abs(rtt - _prevRtt) - _jitter) / 8.0;   // smoothed |Δrtt|
                         _prevRtt = rtt;
                         try { Updated?.Invoke(rtt, bw, (int)Math.Round(_jitter)); } catch { }
+                        if (parts.Length >= 8 && int.TryParse(parts[6], out int touch) && int.TryParse(parts[7], out int rdpei)
+                            && (touch != _touch || rdpei != _rdpei))
+                        {
+                            _touch = touch; _rdpei = rdpei;
+                            FileLog.Line("[STATS pid=" + pid + "] input: " + (touch != 0 ? "touch" : "mouse") + " mode, multi-touch channel " + (rdpei != 0 ? "up" : "not up"));
+                            try { InputState?.Invoke(touch != 0, rdpei != 0); } catch { }
+                        }
                     }
                 }
                 // FRDP-RDP-LIVENESS Part 0 — a clean EOF (server closed its end) fell through the while loop with
@@ -83,9 +97,14 @@ namespace Finestra.Core
 
         public void Pause() => Send("PAUSE");
         public void Resume() => Send("RESUME");
+        /// <summary>SDL-ENGINE — switch the session between touch mode and mouse mode. The engine applies it within
+        /// ~100 ms and confirms on its next STATS line (<see cref="InputState"/>).</summary>
+        public void SetTouch(bool on) => Send(on ? "TOUCH ON" : "TOUCH OFF");
         private void Send(string cmd)
         {
-            try { _writer?.WriteLine(cmd); LastSendFailed = false; }
+            // A command sent before the pipe connected used to vanish without a trace (_writer still null).
+            if (_writer == null) { FileLog.Line("[STATS pid=" + Pid + "] not connected yet, dropped: " + cmd); return; }
+            try { _writer.WriteLine(cmd); LastSendFailed = false; }
             catch (Exception ex) { LastSendFailed = true; FileLog.Line("[STATS pid=" + Pid + "] send failed: " + ex.Message); }
         }
 

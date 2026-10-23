@@ -90,6 +90,16 @@ namespace Finestra.Core
     {
         public static readonly string[] Options = { "Auto (prefer GPU)", "Hardware (GPU)", "Software (openh264)" };
 
+        /// <summary>The same options with the engine's ACTUAL capability folded into the labels. openh264 is a
+        /// COMPILE-TIME choice in the engine (WITH_OPENH264), so an engine built without it cannot honour
+        /// "Software" no matter what this form says — and silently doing something else is how a form stops
+        /// meaning anything. Same length and order as the enum, so index still maps to CameraEncoderOpt.</summary>
+        public static string[] OptionsFor(bool softwareAvailable)
+        {
+            if (softwareAvailable) return Options;
+            return new[] { Options[0], Options[1], Options[2] + "  — not built into this engine" };
+        }
+
         public static string EnvValue(CameraEncoderOpt e)
         {
             switch (e)

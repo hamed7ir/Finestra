@@ -294,7 +294,7 @@ namespace Finestra.UI
                 var pb = Screen.PrimaryScreen.Bounds;
                 var res = RdpLauncher.Launch(cp, pb.Width, pb.Height, useStdin: true);   // own window (no /parent-window)
                 if (!res.Ok)
-                    MessageBox.Show(this, res.Error ?? "Failed to launch wfreerdp.", "Finestra", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show(this, res.Error ?? "Failed to launch the RDP engine.", "Finestra", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
             SessionHost.ConnectOrAdd(cp, this);

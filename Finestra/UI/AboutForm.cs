@@ -69,7 +69,7 @@ namespace Finestra.UI
             var feat = Card(M, y, CW, 152, featBg, featBrd);
             host.Controls.Add(feat);
             feat.Controls.Add(Text2("RDP — built on FreeRDP", 16, 14, CW - 32, _accent, FontHelper.Ui(12f, FontStyle.Bold), 24, featBg, ContentAlignment.MiddleLeft));
-            feat.Controls.Add(Text2("The RDP engine is a ported build of FreeRDP 3.28.0 (with WinPR), cross-compiled for ARM32 Windows RT. Apache-2.0 licensed.",
+            feat.Controls.Add(Text2("The RDP engine is FreeRDP 3.32.2 (its SDL3 client, with WinPR), built for x64 and for ARM32 Windows RT. Apache-2.0 licensed.",
                 16, 42, CW - 32, _title, FontHelper.Ui(9f), 68, featBg, ContentAlignment.TopLeft));
             feat.Controls.Add(Link("→  github.com/FreeRDP/FreeRDP", 16, 118, CW - 32, FreeRdpUrl, FontHelper.Ui(9.5f, FontStyle.Bold), featBg));
             y += 152 + 14;
@@ -77,7 +77,7 @@ namespace Finestra.UI
             var sshCard = Card(M, y, CW, 152, featBg, featBrd);
             host.Controls.Add(sshCard);
             sshCard.Controls.Add(Text2("SSH && SFTP — SSH.NET", 16, 14, CW - 32, _accent, FontHelper.Ui(12f, FontStyle.Bold), 24, featBg, ContentAlignment.MiddleLeft));
-            sshCard.Controls.Add(Text2("The SSH transport for the terminal and the SFTP browser is SSH.NET (Renci.SshNet) 2025.1.0 — MIT licensed. Terminal emulation: VtNetCore 1.0.30 (MIT).",
+            sshCard.Controls.Add(Text2("The SSH transport for the terminal and the SFTP browser is SSH.NET (Renci.SshNet) 2026.0.0 — MIT licensed. Terminal emulation: VtNetCore 1.0.30 (MIT).",
                 16, 42, CW - 32, _title, FontHelper.Ui(9f), 68, featBg, ContentAlignment.TopLeft));
             sshCard.Controls.Add(Link("→  github.com/sshnet/SSH.NET", 16, 118, CW - 32, SshNetUrl, FontHelper.Ui(9.5f, FontStyle.Bold), featBg));
             y += 152 + 14;
@@ -85,7 +85,7 @@ namespace Finestra.UI
             var ftpCard = Card(M, y, CW, 152, featBg, featBrd);
             host.Controls.Add(ftpCard);
             ftpCard.Controls.Add(Text2("FTP && FTPS — FluentFTP", 16, 14, CW - 32, _accent, FontHelper.Ui(12f, FontStyle.Bold), 24, featBg, ContentAlignment.MiddleLeft));
-            ftpCard.Controls.Add(Text2("The FTP and FTPS engine is FluentFTP 54.2.0, a self-contained pure-.NET client with TLS via the in-box SslStream — MIT licensed.",
+            ftpCard.Controls.Add(Text2("The FTP and FTPS engine is FluentFTP 55.1.0, a self-contained pure-.NET client with TLS via the in-box SslStream — MIT licensed.",
                 16, 42, CW - 32, _title, FontHelper.Ui(9f), 68, featBg, ContentAlignment.TopLeft));
             ftpCard.Controls.Add(Link("→  github.com/robinrodricks/FluentFTP", 16, 118, CW - 32, FluentFtpUrl, FontHelper.Ui(9.5f, FontStyle.Bold), featBg));
             y += 152 + 14;
@@ -99,15 +99,18 @@ namespace Finestra.UI
             y += 92 + 14;
 
             // ── Open-source credits — versions read from the SHIPPED bits (engine string-scan + DLL FileVersions),
-            //    not from memory. OpenSSL/zlib differ per arch: the ARM32 engine links the foundry-built pair. ──
+            //    not from memory. Since 2.0.0 both engines link the same OpenSSL 3.5.9 / zlib 1.3.2 pins. ──
             string[][] credits =
             {
-                new[] { "FreeRDP 3.28.0 · WinPR", "Apache-2.0" },
-                new[] { "OpenSSL 3.6.3 (3.3.2 on ARM32)", "Apache-2.0" },
-                new[] { "zlib 1.3.2 (1.3.1 on ARM32)", "zlib" },
-                new[] { "SSH.NET (Renci.SshNet) 2025.1.0", "MIT" },
-                new[] { "BouncyCastle.Cryptography 2.6.2", "MIT" },
-                new[] { "FluentFTP 54.2.0", "MIT" },
+                new[] { "FreeRDP 3.32.2 · WinPR", "Apache-2.0" },
+                new[] { "OpenSSL 3.5.9", "Apache-2.0" },
+                new[] { "zlib 1.3.2", "zlib" },
+                new[] { "SDL3 3.2.14 · SDL3_ttf 3.2.2", "zlib" },
+                new[] { "FreeType 2.15.0", "FreeType License" },
+                new[] { "Open Sans font (in the RDP engine)", "SIL OFL 1.1" },
+                new[] { "SSH.NET (Renci.SshNet) 2026.0.0", "MIT" },
+                new[] { "BouncyCastle.Cryptography 2.7.0", "MIT" },
+                new[] { "FluentFTP 55.1.0", "MIT" },
                 new[] { "VtNetCore 1.0.30", "MIT" },
                 new[] { "Newtonsoft.Json 13.0.4", "MIT" },
                 new[] { "Roboto font 3.009", "SIL OFL 1.1" },   // per the TTF's own name table (roboto-classic)

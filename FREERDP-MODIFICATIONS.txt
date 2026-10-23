@@ -1,49 +1,66 @@
 MODIFICATION NOTICE — FreeRDP / WinPR  (Apache License 2.0, Section 4(b))
 
-The bundled RDP engine (wfreerdp.exe, the x64 and ARM32 builds) is built from
-FreeRDP release 3.28.0 WITH MODIFICATIONS. There are FOUR modifications, listed
-below. The complete modified source is published as the branch
+The bundled RDP engine (sdl-freerdp.exe, the x64 and ARM32 builds) is FreeRDP's
+SDL3 client, built from FreeRDP release 3.32.2 WITH MODIFICATIONS. The complete
+modified source is published as the branch
 
-    finestra-arm32-rt-3.28   at   https://github.com/hamed7ir/FreeRDP
+    finestra-arm32-rt-3.32   at   https://github.com/hamed7ir/FreeRDP
 
-cut from upstream tag 3.28.0, so every modification below is one commit on that
-branch and reads directly as a diff against unmodified 3.28.0.
+cut from upstream tag 3.32.2, so every modification below is one commit on that
+branch and reads directly as a diff against unmodified 3.32.2. FOUR of them are
+in the bundled engine:
 
-  1. WinPR internal-SSPI package-index dispatch fix
-     Files: winpr/libwinpr/sspi/sspi.h, winpr/libwinpr/sspi/sspi_winpr.c,
-            winpr/libwinpr/sspi/NTLM/ntlm.c, winpr/libwinpr/sspi/Negotiate/negotiate.c
-     The internal SSPI stored the security-package name in the context handle's
-     upper pointer with MIXED character width (WCHAR vs char), so UNICODE builds
-     with WITH_NATIVE_SSPI=OFF failed NLA with SEC_E_SECPKG_NOT_FOUND. The fix
-     replaces the name-in-pointer scheme with a width-agnostic package INDEX.
-     Commit: 8eca47218
-     Also submitted upstream as FreeRDP pull request #13136.
+  1. SDL3 client: running inside Finestra (embedding, touch and mouse modes,
+     live stats/control pipe)
+     Files: client/SDL/SDL3/sdl_finestra.cpp and sdl_finestra.hpp (new),
+            client/SDL/SDL3/sdl_context.cpp, sdl_window.cpp, sdl_freerdp.cpp,
+            sdl_disp.cpp, client/SDL/SDL3/CMakeLists.txt
+     With /parent-window:<hwnd> the session window is created as a child of
+     that window and handed to SDL, and keystrokes are sent to the server
+     from it. A per-PID local named pipe (\\.\pipe\finestrardp.<pid>) reports
+     live RTT/bandwidth and the input mode, and accepts PAUSE/RESUME
+     (suppress-output) and TOUCH ON/OFF. In mouse mode Windows' own
+     touch-to-mouse promotion drives the pointer; in touch mode touch goes to
+     the server as multi-touch input. Without /parent-window the client
+     behaves as upstream's, with one exception in the ARM32 build: it
+     defaults to SDL's Direct3D 9 renderer, because Direct3D 11 at feature
+     level 9_1 draws a black screen on Windows RT (an SDL_RENDER_DRIVER
+     setting still takes precedence).
+     Commit: 37e03d1f0
 
-  2. Windows client: embedding + live stats/control pipe
-     Files: client/Windows/wf_client.c, client/Windows/wf_event.c,
-            client/Windows/wf_event.h
-     Adds /parent-window child-embedding behavior fixes and a per-PID local
-     named pipe (\\.\pipe\finestrardp.<pid>) that reports live RTT/bandwidth
-     from FreeRDP's autodetect and accepts PAUSE/RESUME (suppress-output).
-     Commit: 0ecc589d1
-
-  3. Build configuration
+  2. Build configuration
      File: CMakeLists.txt
-     Adds a WIN81 target case (WINVER/_WIN32_WINNT=0x0603) for the Windows
-     RT 8.1 floor and related build-configuration adjustments.
-     Commit: 9a31cc2a5
+     Adds a WIN81 case to CMAKE_WINDOWS_VERSION (WINVER/_WIN32_WINNT=0x0603)
+     for the Windows RT 8.1 API floor.
+     Commit: 30e98430d
 
-  4. Windows client: DPI-aware cursor scaling
-     File: client/Windows/wf_graphics.c
-     The RDP session's hardware cursor was built directly from the server's
-     raw protocol pixel size with no DPI adjustment, rendering it visibly
-     undersized on any display above 100% Windows scaling. Adds a DPI query
-     (GetDpiForWindow, resolved dynamically via GetProcAddress so it never
-     appears as a static import — required for the Windows RT 8.1 loader,
-     which lacks that Windows-10-only export; falls back to the universal
-     GetDeviceCaps(LOGPIXELSX) query where GetDpiForWindow is unavailable)
-     and rescales the built cursor icon to match via CopyImage.
-     Commit: 8f0675c2e
+  3. Common client: touch contact count
+     File: client/common/client.c
+     freerdp_client_touch_update never filled in the number of active
+     contacts, which the touch-to-mouse emulation reads, so emulated touch
+     input misbehaved. It now counts them.
+     Commit: 57fd8b939
+
+  4. Keyboard remapping: matching integer types
+     File: libfreerdp/locale/keyboard.c
+     One caller of freerdp_extract_key_value passed DWORD pointers where the
+     function takes UINT32 (as its other caller already does); recent clang
+     rejects that. Same values, matching types.
+     Commit: 7b2147e75
+
+The same branch also carries two modifications to FreeRDP's Windows client,
+wfreerdp: a local stats/control pipe like the one above (live RTT and
+bandwidth from FreeRDP's network autodetect, and PAUSE/RESUME; commit
+bc8568940 - its message also mentions /parent-window embedding fixes, but
+as applied to 3.32.2 the change contains only the pipe), and DPI-aware
+cursor scaling (commit f345d2ac4). The bundled engine no longer contains
+the Windows client, so they are not part of it; they stay on the branch
+for builds of wfreerdp.
+
+The engines in Finestra 1.0.x (FreeRDP 3.28.0) also carried a WinPR
+internal-SSPI package-index fix. It was accepted upstream as FreeRDP pull
+request #13136 and is part of FreeRDP 3.32.2 itself, so this engine no longer
+modifies WinPR.
 
 The ARM32 / Windows RT cross-build toolchain used to produce the ARM engine is
 published on the same branch under finestra-rt/, with its own NOTICE.txt and

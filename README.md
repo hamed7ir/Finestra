@@ -1,97 +1,125 @@
 # Finestra
 
-**Remote Connection Manager** — RDP · SSH · SFTP / FTP / FTPS in one themed, tabbed client.
+Finestra is a remote connection manager: RDP, SSH, SFTP, FTP and FTPS in one app, with tabs.
 
-Finestra's flagship target is **Windows RT 8.1 on ARM32** (jailbroken Surface RT–class devices),
-where no modern remote-desktop client exists — and it runs equally on **Windows 10/11 ARM32,
-x86 and x64** from one universal AnyCPU build. The RDP engine is a ported, modified
-**FreeRDP 3.28.0** cross-compiled for ARM32 and x64. *(32-bit x86 Windows: the engine is no longer
-bundled — `engine\x86\` ships with a short README explaining how to add one. Everything but RDP
-works without it.)*
+I made it mainly for Windows RT (ARM32 tablets like the Surface RT), because there is no good modern
+remote desktop client for it. The same build also runs on Windows 10 and 11 (ARM32, x86 and x64).
+For RDP it uses FreeRDP 3.32.2 (the SDL3 client), with my changes, built for ARM32 and x64.
 
-**Verified on hardware:** Windows RT 8.1 (ARM32, 1366×768 at 96 DPI) and Windows 10 ARM32
-(1920×1080 at 144 DPI) — RDP connect, drop and reconnect, audio output, and the touch-keyboard-aware
-layout were exercised on real devices on both. The remaining combinations run from the same AnyCPU
-build but have not been device-tested.
+## What was tested on real devices
 
-<p align="center">
-<img width="1012" height="689" alt="manager" src="https://github.com/user-attachments/assets/c9a65e30-c8c4-4cf0-a31d-81371c11dff6" />
-<img width="1280" height="677" alt="session-tabs2" src="https://github.com/user-attachments/assets/ade51834-526a-4f88-b276-725e538fe440" />
+I tested 2.0.0 on a real Windows RT 8.1 device and a Windows 10 ARM32 device. I installed it with the
+new setup, and RDP (connect and use), the Touch / Mouse switch, the keyboard and sound all worked.
+I did not test SSH and FTP on those devices with 2.0.0.
 
+Before that, a build from just before 1.0.3 was tested on the same kind of devices: RDP connect,
+connection drop and reconnect, sound, and the layout with the touch keyboard.
 
-
-</p>
+If something does not work on your device, please tell me.
 
 ## Features
 
-- **RDP** — embedded FreeRDP sessions (tabbed or true fullscreen), live RTT/bandwidth/jitter
-  readout, pause/resume, Letterbox / SmartSizing / Dynamic-resolution oversize modes,
-  multi-monitor tear-off, per-monitor fullscreen.
-- **SSH** — owner-drawn xterm-256color terminal (VtNetCore), live font-size/scrollback/colour
-  preferences, drag-selection copy, password + private-key auth (ed25519 / RSA / ECDSA,
-  passphrase supported), keepalive, manual reconnect with scrollback preserved.
-- **SFTP / FTP / FTPS** — dual-pane file browser (local ⇄ remote), crash-safe temp+rename
-  transfers, upload/download/rename/delete/mkdir, per-session reconnect.
-- **Security posture** — host-key TOFU pinning (`known_hosts.json`, fail-closed on changed
-  keys), FTPS certificate pinning with accept-once, DPAPI-encrypted saved passwords (never
-  plaintext, never on a command line), no telemetry: the app makes **no network calls except
-  to the servers you configure**.
-- **One shell** — mixed RDP/SSH/FTP tabs in one window, drag tabs out to new windows and back,
-  per-type toolbars, system tray, run-on-startup, dark/light theme following the Windows accent,
-  fully owner-drawn UI (renders identically on RT 8.1 and Windows 11).
+**RDP**
+- Sessions run inside Finestra in tabs, or in real fullscreen.
+- A Touch / Mouse switch on the tab bar of a connected RDP session. It only shows on a PC with a
+  touch screen. A hand means Touch mode, an arrow means Mouse mode. In Touch mode your fingers go to
+  the remote PC as real touch, so swipe and pinch work when the remote PC supports it. In Mouse mode
+  a tap is a click, a drag is a drag, and press and hold is a right click.
+- Live ping, bandwidth and jitter on the tab bar.
+- Pause a session, and Reconnect when it drops (the tab tells you why it dropped).
+- Letterbox, smart sizing and dynamic resolution.
+- Drag a session out to its own Finestra window (for example on another monitor), and go fullscreen
+  on any monitor.
 
-## Install
+**SSH**
+- A real terminal (xterm-256color) with font size, scrollback and colour settings.
+- Password or private key login (ed25519, RSA, ECDSA, with passphrase).
+- Keepalive, and reconnect without losing the scrollback.
 
-Grab a release from [Releases](https://github.com/hamed7ir/Finestra/releases):
+**SFTP, FTP and FTPS**
+- Two panes, local and remote. Upload, download, rename, delete, new folder.
+- Transfers are written to a temp file first and renamed at the end, so a broken transfer does not
+  leave a half file.
 
-| Artifact | Use |
-|---|---|
-| `Finestra-Setup-<ver>.zip` | Extract, run `Setup.exe` — per-user install (`%LocalAppData%\Programs\Finestra`), **no admin**, Start-menu shortcut, uninstall entry. The installer is AnyCPU/MSIL so it **runs on Windows RT** too. |
-| `Finestra-<ver>-portable.zip` | Extract anywhere, run `Finestra.exe`. Nothing registered — delete the folder to remove. |
+**Safety**
+- SSH host keys are saved the first time and a changed key is refused.
+- FTPS certificates are saved too, and you are asked before accepting a new one.
+- Saved passwords are encrypted with Windows (DPAPI). They are never stored as plain text and never
+  put on a command line.
+- No telemetry. Finestra only connects to the servers you add.
 
-One bundle covers all architectures — the right `engine\<arch>\wfreerdp.exe` is picked automatically
-(`x64` on 64-bit Windows, `arm` on Windows RT 8.1 and ARM32/ARM64). The **x86** engine is not bundled;
-on 32-bit Windows, drop a 32-bit `wfreerdp.exe` into `engine\x86\` — see the README in that folder, or
-lift the one from the [1.0.2 release](https://github.com/hamed7ir/Finestra/releases), which shipped it.
+**The app**
+- RDP, SSH and FTP tabs in the same window. Drag a tab out to a new window and back.
+- Tray icon, start with Windows, dark and light theme.
+- All the UI is drawn by Finestra itself, so it looks the same on RT 8.1 and on Windows 11.
 
-**Requirements**
-- **Supported on ARM32:** Windows RT **8.0**, Windows RT **8.1**, and **Windows 10 ARM32**
-  (build 15035). On RT 8.0 the .NET Framework **4.8** update has to be installed first, and it is
-  currently difficult to obtain for that version.
-- .NET Framework **4.7+** (in-box on Windows 10 1703+).
-- **Windows RT 8.1**: a jailbroken device (RT only runs unsigned desktop apps after jailbreak).
-- Binaries are **unsigned** — SmartScreen will warn on first run (*More info → Run anyway*).
+## Download and install
 
-**Installed** copies keep your data (connections, host keys, certificates, settings) in
-**`Documents\Finestra\`**, shared between installed copies and surviving upgrades and uninstalls.
-The **portable** download instead ships a `Finestra.portable` file beside the exe, which keeps
-everything in that folder — so a portable copy starts with no connections, does not see an
-installed copy's profiles, and takes its own with it. Delete that file to use the shared location.
+Get it from [Releases](https://github.com/hamed7ir/Finestra/releases).
 
-## Known limitations (1.0)
+- `Finestra-Setup-<version>.exe`: one file, just run it. It installs for your user only into
+  `%LocalAppData%\Programs\Finestra`, with no admin needed. You get a Start menu shortcut and an
+  uninstall entry. It runs on Windows RT too (I installed 2.0.0 with it on RT 8.1 and Windows 10
+  ARM32).
+- `Finestra-<version>-portable.zip`: extract it anywhere and run `Finestra.exe`. Nothing is
+  registered. Delete the folder to remove it.
 
-- No transfer **cancel** yet — a running file transfer completes or fails (queued ops wait).
-- Plain-FTP drop detection is **op-driven**: an idle FTP tab discovers a dead link on the next
-  operation (SSH/SFTP detect drops immediately).
-- System-DPI aware (not per-monitor) — mixed-DPI multi-monitor setups may scale imperfectly.
-- Very large directory listings (>~1,300 rows) can hit an owner-drawn list height limit.
+The right RDP engine is picked for your PC: `engine\x64` on 64-bit Windows, `engine\arm` on Windows RT
+and ARM32 Windows. I have not tested ARM64 Windows. There is no 32-bit x86 engine in the download. On
+32-bit Windows, read the `README.txt` in `engine\x86`. You can copy `wfreerdp.exe` from the
+[1.0.2 release](https://github.com/hamed7ir/Finestra/releases/tag/v1.0.2) into that folder (that one
+has no Touch mode). SSH and FTP work without it.
 
-## Building
+## Requirements
 
-See [BUILD.md](BUILD.md) — including how to rebuild the modified FreeRDP engines for all three
-architectures (the practical half of the GPL corresponding-source offer).
+- Supported on ARM32: Windows RT 8.0, Windows RT 8.1 and Windows 10 ARM32 (build 15035).
+- .NET Framework 4.7 or newer. Windows 10 1703 and later already have it. On Windows RT you need to
+  have it installed too. On RT 8.0 that means the .NET Framework 4.8 update, and right now it is hard
+  to find for that version.
+- Windows RT has to be jailbroken, because RT only runs unsigned desktop apps after a jailbreak.
+- The files are not signed, so SmartScreen warns the first time. Click "More info", then "Run anyway".
 
-## License & credits
+## Where your data is
 
-Finestra is **© 2026 Hamed Ghorbani**, licensed **GPL-3.0-only** — see [LICENSE](LICENSE).
+An installed Finestra keeps your connections, host keys, certificates and settings in
+`Documents\Finestra`. Upgrading or uninstalling does not touch that folder.
 
-Built on excellent open source — full texts in
-[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt):
+The portable zip has a file called `Finestra.portable` next to the exe. Because of that file, the
+portable copy keeps everything in its own folder, so it starts with no connections and takes its data
+with it. Delete that file if you want it to use `Documents\Finestra` instead.
+
+## Known limitations
+
+- You can't cancel a file transfer yet. It finishes or fails.
+- A plain FTP tab only notices a dead connection when you do something in it (SSH and SFTP notice
+  right away).
+- Finestra uses the system DPI, not per monitor DPI, so a setup with monitors at different scaling
+  can look a bit off.
+- A very big folder listing (more than about 1,300 items) can hit a size limit in the list.
+- An RDP session inside Finestra (in a tab, or in a window you dragged a tab into) always uses one
+  monitor. "Use multiple monitors" and "Span across monitors" only work when Settings > Session >
+  Connect mode is "Window (single, shell-out)", where the engine opens its own window without tabs.
+
+## Building it yourself
+
+See [BUILD.md](BUILD.md) for building the app. The RDP engines are built from my FreeRDP branch
+[finestra-arm32-rt-3.32](https://github.com/hamed7ir/FreeRDP/tree/finestra-arm32-rt-3.32), and its
+README explains how. BUILD.md is not updated for the new engine yet.
+
+## License
+
+Finestra is © 2026 Hamed Ghorbani, under the GPL-3.0-only license. See [LICENSE](LICENSE).
+
+It is built on these open source projects. The full license texts are in
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
 
 | Component | License |
 |---|---|
-| [FreeRDP](https://github.com/FreeRDP/FreeRDP) 3.28.0 + WinPR (**modified** — see [FREERDP-MODIFICATIONS.txt](FREERDP-MODIFICATIONS.txt)) | Apache-2.0 |
-| OpenSSL · zlib (statically linked in the engine) | Apache-2.0 · zlib |
-| [SSH.NET](https://github.com/sshnet/SSH.NET) 2025.1.0 · BouncyCastle.Cryptography 2.6.2 | MIT |
-| [FluentFTP](https://github.com/robinrodricks/FluentFTP) 54.2.0 · VtNetCore 1.0.30 · Newtonsoft.Json 13.0.4 | MIT |
-| Roboto 3.009 (bundled UI font) | SIL OFL 1.1 |
+| [FreeRDP](https://github.com/FreeRDP/FreeRDP) 3.32.2 and WinPR, changed by me (see [FREERDP-MODIFICATIONS.txt](FREERDP-MODIFICATIONS.txt)). My version: [hamed7ir/FreeRDP](https://github.com/hamed7ir/FreeRDP/tree/finestra-arm32-rt-3.32) | Apache-2.0 |
+| OpenSSL and zlib (inside the RDP engine) | Apache-2.0, zlib |
+| SDL3 3.2.14 and SDL3_ttf 3.2.2 (inside the RDP engine) | zlib |
+| FreeType 2.15.0 (inside the RDP engine) | FreeType License |
+| Open Sans (inside the RDP engine, for its dialogs) | SIL OFL 1.1 |
+| [SSH.NET](https://github.com/sshnet/SSH.NET) 2026.0.0, BouncyCastle.Cryptography 2.7.0 | MIT |
+| [FluentFTP](https://github.com/robinrodricks/FluentFTP) 55.1.0, VtNetCore 1.0.30, Newtonsoft.Json 13.0.4 | MIT |
+| Roboto 3.009 (the UI font) | SIL OFL 1.1 |

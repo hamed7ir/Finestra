@@ -5,12 +5,16 @@ Finestra (© 2026 Hamed Ghorbani, GPL-3.0-only — see LICENSE) bundles or links
 the following third-party software. Full license texts are reproduced below.
 
   COMPONENT                                  VERSION            LICENSE
-  FreeRDP + WinPR (modified — see notice)    3.28.0             Apache-2.0
-  OpenSSL (statically linked in the engine)  3.6.3 / 3.3.2 ARM  Apache-2.0
-  zlib (statically linked in the engine)     1.3.2 / 1.3.1 ARM  zlib
-  SSH.NET (Renci.SshNet)                     2025.1.0           MIT
-  BouncyCastle.Cryptography                  2.6.2              MIT
-  FluentFTP                                  54.2.0             MIT
+  FreeRDP + WinPR (modified — see notice)    3.32.2             Apache-2.0
+  OpenSSL (statically linked in the engine)  3.5.9 (LTS)        Apache-2.0
+  zlib (statically linked in the engine)     1.3.2              zlib
+  SDL3 (statically linked in the engine)     3.2.14             zlib
+  SDL3_ttf (statically linked in the engine) 3.2.2              zlib
+  FreeType (statically linked in the engine) 2.15.0             FreeType License
+  Open Sans font (inside the engine)         variable font      SIL OFL 1.1
+  SSH.NET (Renci.SshNet)                     2026.0.0           MIT
+  BouncyCastle.Cryptography                  2.7.0              MIT
+  FluentFTP                                  55.1.0             MIT
   VtNetCore                                  1.0.30             MIT
   Newtonsoft.Json                            13.0.4             MIT
   Microsoft .NET facade/BCL packages         (assorted)         MIT
@@ -19,9 +23,16 @@ the following third-party software. Full license texts are reproduced below.
 The Microsoft .NET facade/BCL packages are: System.Formats.Asn1, System.Memory,
 System.Buffers, System.Numerics.Vectors, System.Runtime.CompilerServices.Unsafe,
 System.Threading.Tasks.Extensions, System.ValueTuple, System.Diagnostics.
-DiagnosticSource, Microsoft.Bcl.AsyncInterfaces, Microsoft.Extensions.Logging.
-Abstractions, Microsoft.Extensions.DependencyInjection.Abstractions
+DiagnosticSource, Microsoft.Bcl.AsyncInterfaces, Microsoft.Bcl.Cryptography,
+Microsoft.Extensions.Logging.Abstractions, Microsoft.Extensions.
+DependencyInjection.Abstractions
 (© .NET Foundation and Contributors, MIT — text under "Microsoft .NET" below).
+
+Portions of this software are copyright © 2026 The FreeType Project
+(https://freetype.org).  All rights reserved.
+
+SDL3 also compiles in a few third-party pieces of its own; their notices are
+under "Third-party code inside SDL3" below.
 
 ==============================================================================
 MODIFICATION NOTICE — FreeRDP / WinPR
@@ -29,50 +40,67 @@ MODIFICATION NOTICE — FreeRDP / WinPR
 
 MODIFICATION NOTICE — FreeRDP / WinPR  (Apache License 2.0, Section 4(b))
 
-The bundled RDP engine (wfreerdp.exe, the x64 and ARM32 builds) is built from
-FreeRDP release 3.28.0 WITH MODIFICATIONS. There are FOUR modifications, listed
-below. The complete modified source is published as the branch
+The bundled RDP engine (sdl-freerdp.exe, the x64 and ARM32 builds) is FreeRDP's
+SDL3 client, built from FreeRDP release 3.32.2 WITH MODIFICATIONS. The complete
+modified source is published as the branch
 
-    finestra-arm32-rt-3.28   at   https://github.com/hamed7ir/FreeRDP
+    finestra-arm32-rt-3.32   at   https://github.com/hamed7ir/FreeRDP
 
-cut from upstream tag 3.28.0, so every modification below is one commit on that
-branch and reads directly as a diff against unmodified 3.28.0.
+cut from upstream tag 3.32.2, so every modification below is one commit on that
+branch and reads directly as a diff against unmodified 3.32.2. FOUR of them are
+in the bundled engine:
 
-  1. WinPR internal-SSPI package-index dispatch fix
-     Files: winpr/libwinpr/sspi/sspi.h, winpr/libwinpr/sspi/sspi_winpr.c,
-            winpr/libwinpr/sspi/NTLM/ntlm.c, winpr/libwinpr/sspi/Negotiate/negotiate.c
-     The internal SSPI stored the security-package name in the context handle's
-     upper pointer with MIXED character width (WCHAR vs char), so UNICODE builds
-     with WITH_NATIVE_SSPI=OFF failed NLA with SEC_E_SECPKG_NOT_FOUND. The fix
-     replaces the name-in-pointer scheme with a width-agnostic package INDEX.
-     Commit: 8eca47218
-     Also submitted upstream as FreeRDP pull request #13136.
+  1. SDL3 client: running inside Finestra (embedding, touch and mouse modes,
+     live stats/control pipe)
+     Files: client/SDL/SDL3/sdl_finestra.cpp and sdl_finestra.hpp (new),
+            client/SDL/SDL3/sdl_context.cpp, sdl_window.cpp, sdl_freerdp.cpp,
+            sdl_disp.cpp, client/SDL/SDL3/CMakeLists.txt
+     With /parent-window:<hwnd> the session window is created as a child of
+     that window and handed to SDL, and keystrokes are sent to the server
+     from it. A per-PID local named pipe (\\.\pipe\finestrardp.<pid>) reports
+     live RTT/bandwidth and the input mode, and accepts PAUSE/RESUME
+     (suppress-output) and TOUCH ON/OFF. In mouse mode Windows' own
+     touch-to-mouse promotion drives the pointer; in touch mode touch goes to
+     the server as multi-touch input. Without /parent-window the client
+     behaves as upstream's, with one exception in the ARM32 build: it
+     defaults to SDL's Direct3D 9 renderer, because Direct3D 11 at feature
+     level 9_1 draws a black screen on Windows RT (an SDL_RENDER_DRIVER
+     setting still takes precedence).
+     Commit: 37e03d1f0
 
-  2. Windows client: embedding + live stats/control pipe
-     Files: client/Windows/wf_client.c, client/Windows/wf_event.c,
-            client/Windows/wf_event.h
-     Adds /parent-window child-embedding behavior fixes and a per-PID local
-     named pipe (\\.\pipe\finestrardp.<pid>) that reports live RTT/bandwidth
-     from FreeRDP's autodetect and accepts PAUSE/RESUME (suppress-output).
-     Commit: 0ecc589d1
-
-  3. Build configuration
+  2. Build configuration
      File: CMakeLists.txt
-     Adds a WIN81 target case (WINVER/_WIN32_WINNT=0x0603) for the Windows
-     RT 8.1 floor and related build-configuration adjustments.
-     Commit: 9a31cc2a5
+     Adds a WIN81 case to CMAKE_WINDOWS_VERSION (WINVER/_WIN32_WINNT=0x0603)
+     for the Windows RT 8.1 API floor.
+     Commit: 30e98430d
 
-  4. Windows client: DPI-aware cursor scaling
-     File: client/Windows/wf_graphics.c
-     The RDP session's hardware cursor was built directly from the server's
-     raw protocol pixel size with no DPI adjustment, rendering it visibly
-     undersized on any display above 100% Windows scaling. Adds a DPI query
-     (GetDpiForWindow, resolved dynamically via GetProcAddress so it never
-     appears as a static import — required for the Windows RT 8.1 loader,
-     which lacks that Windows-10-only export; falls back to the universal
-     GetDeviceCaps(LOGPIXELSX) query where GetDpiForWindow is unavailable)
-     and rescales the built cursor icon to match via CopyImage.
-     Commit: 8f0675c2e
+  3. Common client: touch contact count
+     File: client/common/client.c
+     freerdp_client_touch_update never filled in the number of active
+     contacts, which the touch-to-mouse emulation reads, so emulated touch
+     input misbehaved. It now counts them.
+     Commit: 57fd8b939
+
+  4. Keyboard remapping: matching integer types
+     File: libfreerdp/locale/keyboard.c
+     One caller of freerdp_extract_key_value passed DWORD pointers where the
+     function takes UINT32 (as its other caller already does); recent clang
+     rejects that. Same values, matching types.
+     Commit: 7b2147e75
+
+The same branch also carries two modifications to FreeRDP's Windows client,
+wfreerdp: a local stats/control pipe like the one above (live RTT and
+bandwidth from FreeRDP's network autodetect, and PAUSE/RESUME; commit
+bc8568940 - its message also mentions /parent-window embedding fixes, but
+as applied to 3.32.2 the change contains only the pipe), and DPI-aware
+cursor scaling (commit f345d2ac4). The bundled engine no longer contains
+the Windows client, so they are not part of it; they stay on the branch
+for builds of wfreerdp.
+
+The engines in Finestra 1.0.x (FreeRDP 3.28.0) also carried a WinPR
+internal-SSPI package-index fix. It was accepted upstream as FreeRDP pull
+request #13136 and is part of FreeRDP 3.32.2 itself, so this engine no longer
+modifies WinPR.
 
 The ARM32 / Windows RT cross-build toolchain used to produce the ARM engine is
 published on the same branch under finestra-rt/, with its own NOTICE.txt and
@@ -557,3 +585,374 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+
+==============================================================================
+ZLIB LICENSE — SDL3 and SDL3_ttf
+==============================================================================
+
+SDL 3.2.14 and SDL3_ttf 3.2.2 (https://libsdl.org), both under this licence:
+
+Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
+  
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+  
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required. 
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+
+==============================================================================
+Third-party code inside SDL3
+==============================================================================
+
+Math routines (src/libm), from FreeBSD's msun:
+
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+
+YUV to RGB conversion (src/video/yuv2rgb), BSD 3-Clause License:
+
+Copyright (c) 2016, Adrien Descamps
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of yuv2rgb nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+stb_image (src/video/stb_image.h), Copyright (c) 2017 Sean Barrett, used under
+its MIT licence (it is also offered as public domain):
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+SDL's memory allocator (dlmalloc, Doug Lea), its CRC and strtok_r routines are
+public domain or CC0, and its qsort (Gareth McCaughan) is under the zlib licence
+above.
+
+==============================================================================
+FREETYPE LICENSE — FreeType 2.15.0
+==============================================================================
+
+FreeType is offered under two licences; Finestra uses it under the FreeType
+License (FTL), reproduced in full:
+
+                    The FreeType Project LICENSE
+                    ----------------------------
+
+                            2006-Jan-27
+
+                    Copyright 1996-2002, 2006 by
+          David Turner, Robert Wilhelm, and Werner Lemberg
+
+
+
+Introduction
+============
+
+  The FreeType  Project is distributed in  several archive packages;
+  some of them may contain, in addition to the FreeType font engine,
+  various tools and  contributions which rely on, or  relate to, the
+  FreeType Project.
+
+  This  license applies  to all  files found  in such  packages, and
+  which do not  fall under their own explicit  license.  The license
+  affects  thus  the  FreeType   font  engine,  the  test  programs,
+  documentation and makefiles, at the very least.
+
+  This  license   was  inspired  by  the  BSD,   Artistic,  and  IJG
+  (Independent JPEG  Group) licenses, which  all encourage inclusion
+  and  use of  free  software in  commercial  and freeware  products
+  alike.  As a consequence, its main points are that:
+
+    o We don't promise that this software works. However, we will be
+      interested in any kind of bug reports. (`as is' distribution)
+
+    o You can  use this software for whatever you  want, in parts or
+      full form, without having to pay us. (`royalty-free' usage)
+
+    o You may not pretend that  you wrote this software.  If you use
+      it, or  only parts of it,  in a program,  you must acknowledge
+      somewhere  in  your  documentation  that  you  have  used  the
+      FreeType code. (`credits')
+
+  We  specifically  permit  and  encourage  the  inclusion  of  this
+  software, with  or without modifications,  in commercial products.
+  We  disclaim  all warranties  covering  The  FreeType Project  and
+  assume no liability related to The FreeType Project.
+
+
+  Finally,  many  people  asked  us  for  a  preferred  form  for  a
+  credit/disclaimer to use in compliance with this license.  We thus
+  encourage you to use the following text:
+
+   """
+    Portions of this software are copyright © <year> The FreeType
+    Project (https://freetype.org).  All rights reserved.
+   """
+
+  Please replace <year> with the value from the FreeType version you
+  actually use.
+
+
+Legal Terms
+===========
+
+0. Definitions
+--------------
+
+  Throughout this license,  the terms `package', `FreeType Project',
+  and  `FreeType  archive' refer  to  the  set  of files  originally
+  distributed  by the  authors  (David Turner,  Robert Wilhelm,  and
+  Werner Lemberg) as the `FreeType Project', be they named as alpha,
+  beta or final release.
+
+  `You' refers to  the licensee, or person using  the project, where
+  `using' is a generic term including compiling the project's source
+  code as  well as linking it  to form a  `program' or `executable'.
+  This  program is  referred to  as  `a program  using the  FreeType
+  engine'.
+
+  This  license applies  to all  files distributed  in  the original
+  FreeType  Project,   including  all  source   code,  binaries  and
+  documentation,  unless  otherwise  stated   in  the  file  in  its
+  original, unmodified form as  distributed in the original archive.
+  If you are  unsure whether or not a particular  file is covered by
+  this license, you must contact us to verify this.
+
+  The FreeType  Project is copyright (C) 1996-2000  by David Turner,
+  Robert Wilhelm, and Werner Lemberg.  All rights reserved except as
+  specified below.
+
+1. No Warranty
+--------------
+
+  THE FREETYPE PROJECT  IS PROVIDED `AS IS' WITHOUT  WARRANTY OF ANY
+  KIND, EITHER  EXPRESS OR IMPLIED,  INCLUDING, BUT NOT  LIMITED TO,
+  WARRANTIES  OF  MERCHANTABILITY   AND  FITNESS  FOR  A  PARTICULAR
+  PURPOSE.  IN NO EVENT WILL ANY OF THE AUTHORS OR COPYRIGHT HOLDERS
+  BE LIABLE  FOR ANY DAMAGES CAUSED  BY THE USE OR  THE INABILITY TO
+  USE, OF THE FREETYPE PROJECT.
+
+2. Redistribution
+-----------------
+
+  This  license  grants  a  worldwide, royalty-free,  perpetual  and
+  irrevocable right  and license to use,  execute, perform, compile,
+  display,  copy,   create  derivative  works   of,  distribute  and
+  sublicense the  FreeType Project (in  both source and  object code
+  forms)  and  derivative works  thereof  for  any  purpose; and  to
+  authorize others  to exercise  some or all  of the  rights granted
+  herein, subject to the following conditions:
+
+    o Redistribution of  source code  must retain this  license file
+      (`FTL.TXT') unaltered; any  additions, deletions or changes to
+      the original  files must be clearly  indicated in accompanying
+      documentation.   The  copyright   notices  of  the  unaltered,
+      original  files must  be  preserved in  all  copies of  source
+      files.
+
+    o Redistribution in binary form must provide a  disclaimer  that
+      states  that  the software is based in part of the work of the
+      FreeType Team,  in  the  distribution  documentation.  We also
+      encourage you to put an URL to the FreeType web page  in  your
+      documentation, though this isn't mandatory.
+
+  These conditions  apply to any  software derived from or  based on
+  the FreeType Project,  not just the unmodified files.   If you use
+  our work, you  must acknowledge us.  However, no  fee need be paid
+  to us.
+
+3. Advertising
+--------------
+
+  Neither the  FreeType authors and  contributors nor you  shall use
+  the name of the  other for commercial, advertising, or promotional
+  purposes without specific prior written permission.
+
+  We suggest,  but do not require, that  you use one or  more of the
+  following phrases to refer  to this software in your documentation
+  or advertising  materials: `FreeType Project',  `FreeType Engine',
+  `FreeType library', or `FreeType Distribution'.
+
+  As  you have  not signed  this license,  you are  not  required to
+  accept  it.   However,  as  the FreeType  Project  is  copyrighted
+  material, only  this license, or  another one contracted  with the
+  authors, grants you  the right to use, distribute,  and modify it.
+  Therefore,  by  using,  distributing,  or modifying  the  FreeType
+  Project, you indicate that you understand and accept all the terms
+  of this license.
+
+4. Contacts
+-----------
+
+  There are two mailing lists related to FreeType:
+
+    o freetype@nongnu.org
+
+      Discusses general use and applications of FreeType, as well as
+      future and  wanted additions to the  library and distribution.
+      If  you are looking  for support,  start in  this list  if you
+      haven't found anything to help you in the documentation.
+
+    o freetype-devel@nongnu.org
+
+      Discusses bugs,  as well  as engine internals,  design issues,
+      specific licenses, porting, etc.
+
+  Our home page can be found at
+
+    https://freetype.org
+
+
+--- end of FTL.TXT ---
+
+FreeType's BDF driver (src/bdf), which is compiled in:
+
+Copyright (C) 2001-2002 by Francesco Zappa Nardelli
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+*** Portions of the driver (that is, bdflib.c and bdf.h):
+
+Copyright 2000 Computing Research Labs, New Mexico State University
+Copyright 2001-2002, 2011 Francesco Zappa Nardelli
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE COMPUTING RESEARCH LAB OR NEW MEXICO STATE UNIVERSITY BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT
+OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR
+THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+FreeType's PCF driver (src/pcf), which is compiled in:
+
+Copyright (C) 2000 by Francesco Zappa Nardelli
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Portions of the PCF driver (src/pcf/pcfutil.c):
+
+Copyright 1990, 1994, 1998  The Open Group
+
+Permission to use, copy, modify, distribute, and sell this software and its
+documentation for any purpose is hereby granted without fee, provided that
+the above copyright notice appear in all copies and that both that
+copyright notice and this permission notice appear in supporting
+documentation.
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+OPEN GROUP BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of The Open Group shall not be
+used in advertising or otherwise to promote the sale, use or other dealings
+in this Software without prior written authorization from The Open Group.
+
+==============================================================================
+SIL OPEN FONT LICENSE 1.1 — Open Sans
+==============================================================================
+
+Open Sans (variable font), compiled into the RDP engine for its dialogs:
+Copyright 2020 The Open Sans Project Authors (https://github.com/googlefonts/opensans)
+Licensed under the SIL Open Font License, Version 1.1. The licence text is the
+same as for Roboto, reproduced in full in the Roboto section above.

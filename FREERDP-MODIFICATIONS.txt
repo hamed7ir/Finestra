@@ -7,7 +7,7 @@ modified source is published as the branch
     finestra-arm32-rt-3.32   at   https://github.com/hamed7ir/FreeRDP
 
 cut from upstream tag 3.32.2, so every modification below is one commit on that
-branch and reads directly as a diff against unmodified 3.32.2. FOUR of them are
+branch and reads directly as a diff against unmodified 3.32.2. SIX of them are
 in the bundled engine:
 
   1. SDL3 client: running inside Finestra (embedding, touch and mouse modes,
@@ -47,6 +47,29 @@ in the bundled engine:
      function takes UINT32 (as its other caller already does); recent clang
      rejects that. Same values, matching types.
      Commit: 7b2147e75
+
+  5. SDL3 client: the Windows clipboard, with file copy
+     Files: client/SDL/SDL3/sdl_wincliprdr.cpp and sdl_wincliprdr.hpp (new),
+            client/SDL/SDL3/sdl_channels.cpp, client/SDL/SDL3/CMakeLists.txt
+     On Windows the clipboard channel is served by a module of its own
+     instead of SDL's clipboard, which only handles text and images and does
+     not notice a local copy while the session is embedded. Text, images and
+     other plain formats go both ways, and so do copied files: files copied
+     on the server can be pasted into a folder on the device, and files
+     copied on the device can be pasted on the server. File reads adapt their
+     request size to the link, so a far server is not held back by round
+     trips. Based on the design of FreeRDP's Windows client
+     (client/Windows/wf_cliprdr.c).
+     Commits: 6820be1e3, e966f00b8
+
+  6. Shared channel code: reassembling a chunked message in linear time
+     File: channels/client/addin.c
+     A chunked clipboard (or RAIL) channel message was reassembled by growing
+     its buffer one chunk at a time, so every chunk could copy the whole
+     message again. The buffer now grows geometrically, capped at the
+     announced total and at twice what has arrived. This makes big clipboard
+     file transfers much faster.
+     Commit: 68dbf9a32
 
 The same branch also carries two modifications to FreeRDP's Windows client,
 wfreerdp: a local stats/control pipe like the one above (live RTT and

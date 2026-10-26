@@ -12,6 +12,9 @@ I tested 2.0.0 on a real Windows RT 8.1 device and a Windows 10 ARM32 device. I 
 new setup, and RDP (connect and use), the Touch / Mouse switch, the keyboard and sound all worked.
 I did not test SSH and FTP on those devices with 2.0.0.
 
+2.0.1 adds copy and paste of files. I tested it on my PC with a real server, text and files both ways,
+but not on the devices yet.
+
 Before that, a build from just before 1.0.3 was tested on the same kind of devices: RDP connect,
 connection drop and reconnect, sound, and the layout with the touch keyboard.
 
@@ -25,6 +28,9 @@ If something does not work on your device, please tell me.
   touch screen. A hand means Touch mode, an arrow means Mouse mode. In Touch mode your fingers go to
   the remote PC as real touch, so swipe and pinch work when the remote PC supports it. In Mouse mode
   a tap is a click, a drag is a drag, and press and hold is a right click.
+- Clipboard both ways, with files. Copy files on the remote PC, paste them into a folder on your
+  device, and they download like a normal copy. It works the other way too. In the connection
+  settings, Copy files can be set to one way only, or off.
 - Live ping, bandwidth and jitter on the tab bar.
 - Pause a session, and Reconnect when it drops (the tab tells you why it dropped).
 - Letterbox, smart sizing and dynamic resolution.

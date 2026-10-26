@@ -123,3 +123,7 @@ It is built on these open source projects. The full license texts are in
 | [SSH.NET](https://github.com/sshnet/SSH.NET) 2026.0.0, BouncyCastle.Cryptography 2.7.0 | MIT |
 | [FluentFTP](https://github.com/robinrodricks/FluentFTP) 55.1.0, VtNetCore 1.0.30, Newtonsoft.Json 13.0.4 | MIT |
 | Roboto 3.009 (the UI font) | SIL OFL 1.1 |
+
+## Credits
+
+I built Finestra with help from [Claude](https://claude.ai), the AI assistant made by Anthropic.

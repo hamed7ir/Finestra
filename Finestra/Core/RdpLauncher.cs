@@ -139,6 +139,7 @@ namespace Finestra.Core
             // engine load the silent backend, so there is deliberately no longer a path that skips it.
             t.Add("/audio-mode:" + AudioValue(s.Audio));
             if (!s.Clipboard) t.Add("-clipboard");
+            else if (s.FileCopy != FileCopyOpt.Default) t.Add("/clipboard:files-to:" + FileCopyValue(s.FileCopy));
             if (s.Drives) t.Add("+drives");
             if (s.Printer) t.Add("/printer");
             // FIN-AV-REDIR — microphone (audio-input) redirect, x64-ONLY. The audin+winmm capture backend
@@ -525,6 +526,11 @@ namespace Finestra.Core
         private static string AudioValue(AudioOpt a)
         {
             switch (a) { case AudioOpt.PlayRemote: return "1"; case AudioOpt.None: return "2"; default: return "0"; }
+        }
+        // FreeRDP names the DESTINATION: files-to:local = server -> this PC (client/common/cmdline.c).
+        private static string FileCopyValue(FileCopyOpt f)
+        {
+            switch (f) { case FileCopyOpt.ServerToLocal: return "local"; case FileCopyOpt.LocalToServer: return "remote"; default: return "off"; }
         }
         private static string SecurityValue(SecurityOpt s)
         {

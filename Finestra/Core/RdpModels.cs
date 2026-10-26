@@ -13,6 +13,10 @@ namespace Finestra.Core
     /// <summary>/audio-mode:&lt;n&gt; — 0=redirect(play locally), 1=server(play on remote), 2=none. Default emits nothing.</summary>
     public enum AudioOpt { Default, PlayLocal, PlayRemote, None }
 
+    /// <summary>/clipboard:files-to:&lt;local|remote|off&gt; — which way copied FILES may travel (text is not
+    /// affected). Default emits nothing: the engine copies files both ways. Only emitted while Clipboard is on.</summary>
+    public enum FileCopyOpt { Default, ServerToLocal, LocalToServer, Off }
+
     /// <summary>/bpp:&lt;depth&gt; — session color depth. Default emits nothing.</summary>
     public enum ColorDepthOpt { Default, Bpp32, Bpp24, Bpp16, Bpp15, Bpp8 }
 
@@ -216,6 +220,7 @@ namespace Finestra.Core
         // ── Local resources ──
         public AudioOpt Audio { get; set; } = AudioOpt.Default;  // /audio-mode:
         public bool Clipboard { get; set; } = true;              // -clipboard when false
+        public FileCopyOpt FileCopy { get; set; } = FileCopyOpt.Default;   // /clipboard:files-to: (Clipboard on only)
         public bool Drives { get; set; } = false;                // +drives when true
         public bool Printer { get; set; } = false;               // /printer (default printer) when true
         // FIN-AV-REDIR — redirect the LOCAL microphone to the server (audio-input via the audin+winmm

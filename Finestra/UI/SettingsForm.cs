@@ -21,6 +21,7 @@ namespace Finestra.UI
         private static readonly string[] ColorDepthOptions = { "Default", "32-bit", "24-bit", "16-bit", "15-bit", "8-bit" };
         private static readonly string[] NetworkOptions = { "Default", "Modem", "Broadband (low)", "Broadband", "Broadband (high)", "WAN", "LAN", "Auto" };
         private static readonly string[] AudioOptions = { "Play on this PC", "Play on server", "No audio" };
+        private static readonly string[] FileCopyOptions = { "Both ways", "Server to this PC", "This PC to server", "Off" };
         private static readonly string[] SecurityOptions = { "Default (negotiate)", "Force NLA", "NLA off", "TLS only", "RDP (legacy)" };
         private static readonly string[] CompressionLevelOptions = { "Default", "0", "1", "2" };
         private static readonly string[] GfxOptions = { "Default", "H.264 (AVC444)", "H.264 (AVC420)", "RemoteFX", "Progressive" };
@@ -71,6 +72,9 @@ namespace Finestra.UI
             // ── Local resources ──
             var audio = Choice("Audio", AudioOptions, AudioIndex(_s.Audio), i => _s.Audio = AudioFromIndex(i, _s.Audio));
             var clipboard = Toggle("Clipboard", _s.Clipboard, v => _s.Clipboard = v);
+            // Files copied through the clipboard (paste a server file into a folder here, or the other way).
+            // Text is not affected, and with Clipboard off nothing is copied at all.
+            var fileCopy = Choice("Copy files", FileCopyOptions, (int)_s.FileCopy, i => _s.FileCopy = (FileCopyOpt)i);
             var drives = Toggle("Redirect drives", _s.Drives, v => _s.Drives = v);
             var printer = Toggle("Redirect default printer", _s.Printer, v => _s.Printer = v);
             // FIN-AV-REDIR — microphone redirect is x64-ONLY (the project's first deliberately-x64-only
@@ -139,7 +143,7 @@ namespace Finestra.UI
             if (cameraFpsCustom != null) rows.Add(cameraFpsCustom);// custom fps value
             if (cameraEncoder != null) rows.Add(cameraEncoder);    // GPU-hardware vs openh264
             if (cameraBitrate != null) rows.Add(cameraBitrate);    // target bitrate (quality vs uplink)
-            rows.Add(clipboard); rows.Add(drives); rows.Add(printer);
+            rows.Add(clipboard); rows.Add(fileCopy); rows.Add(drives); rows.Add(printer);
             rows.Add(new SectionHeader("Security")); rows.Add(security);
             PopulateBody(rows.ToArray());
         }

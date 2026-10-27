@@ -1,5 +1,7 @@
 # Finestra
 
+![Finestra 2.0](media/poster.png)
+
 Finestra is a remote connection manager: RDP, SSH, SFTP, FTP and FTPS in one app, with tabs.
 
 I made it mainly for Windows RT (ARM32 tablets like the Surface RT), because there is no good modern
@@ -14,6 +16,9 @@ I did not test SSH and FTP on those devices with 2.0.0.
 
 2.0.1 adds copy and paste of files. I tested it on my PC with a real server, text and files both ways,
 but not on the devices yet.
+
+2.0.2 fixes the settings windows on screens with Windows scaling at 125% or more, where the field
+names were drawn behind the text boxes. I checked it on my PC at 150% and at 100%.
 
 Before that, a build from just before 1.0.3 was tested on the same kind of devices: RDP connect,
 connection drop and reconnect, sound, and the layout with the touch keyboard.

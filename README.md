@@ -85,7 +85,7 @@ has no Touch mode). SSH and FTP work without it.
 
 - Supported on ARM32: Windows RT 8.0, Windows RT 8.1 and Windows 10 ARM32 (build 15035).
 - .NET Framework 4.7 or newer. Windows 10 1703 and later already have it. On Windows RT you need to
-  have it installed too. On RT 8.0 that means the .NET Framework 4.8 update, and right now it is hard
+  have it installed too, for windows 8.1 download it from here https://go.microsoft.com/fwlink/?linkid=2088632 . On RT 8.0 that means the .NET Framework 4.8 update, and right now it is hard
   to find for that version.
 - Windows RT has to be jailbroken, because RT only runs unsigned desktop apps after a jailbreak.
 - The files are not signed, so SmartScreen warns the first time. Click "More info", then "Run anyway".

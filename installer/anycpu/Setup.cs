@@ -82,7 +82,7 @@ namespace FinestraSetup
         internal const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Finestra";
         internal const string ShortcutDesc = "Finestra - Remote Connection Manager";
 #endif
-        internal const string AppVersion = "2.0.1";
+        internal const string AppVersion = "2.0.2";
         internal const string Publisher = "Hamed Ghorbani";
         internal const string ExeName = "Finestra.exe";
         internal const string ProcessName = "Finestra";

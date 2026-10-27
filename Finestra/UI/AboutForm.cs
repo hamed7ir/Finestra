@@ -50,45 +50,35 @@ namespace Finestra.UI
             const int M = 22, CW = 424;   // left margin, content width
             int y = 22;
 
+            // Every text height below is the larger of its 100% value and what its font needs (Fit): the fonts grow
+            // with the Windows scale and these heights did not, so at 150% the name ran into the line under it.
+
             // ── Header: icon + name + version + description (centered) ──
+            int icon = UiScale.Px(96);
             var pic = new PictureBox
             {
-                Size = new Size(96, 96), Location = new Point(M + (CW - 96) / 2, y),
+                Size = new Size(icon, icon), Location = new Point(M + (CW - icon) / 2, y),
                 SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Transparent
             };
-            try { var app = ThemedChrome.AppIcon; if (app != null) pic.Image = new Icon(app, 96, 96).ToBitmap(); } catch { }
+            try { var app = ThemedChrome.AppIcon; if (app != null) pic.Image = new Icon(app, icon, icon).ToBitmap(); } catch { }
             host.Controls.Add(pic);
-            y += 96 + 10;
+            y += icon + 10;
 
-            host.Controls.Add(Text2("Finestra", M, y, CW, _title, FontHelper.Ui(20f, FontStyle.Bold), 34, _bg, ContentAlignment.MiddleCenter)); y += 34;
-            host.Controls.Add(Text2("Remote Connection Manager", M, y, CW, _accent, FontHelper.Ui(10.5f, FontStyle.Bold), 22, _bg, ContentAlignment.MiddleCenter)); y += 24;
-            host.Controls.Add(Text2("Version " + ver, M, y, CW, _sub, FontHelper.Ui(9.5f), 20, _bg, ContentAlignment.MiddleCenter)); y += 22;
-            host.Controls.Add(Text2("An ARM32-ready RDP · SSH · SFTP / FTP client for Windows RT 8.1 and Windows 10/11.", M, y, CW, _sub, FontHelper.Ui(9f), 44, _bg, ContentAlignment.TopCenter)); y += 50;   // 2 lines even at 120+ DPI
+            y += Add(host, "Finestra", M, y, CW, _title, FontHelper.Ui(20f, FontStyle.Bold), 34, _bg, ContentAlignment.MiddleCenter);
+            y += Add(host, "Remote Connection Manager", M, y, CW, _accent, FontHelper.Ui(10.5f, FontStyle.Bold), 22, _bg, ContentAlignment.MiddleCenter) + 2;
+            y += Add(host, "Version " + ver, M, y, CW, _sub, FontHelper.Ui(9.5f), 20, _bg, ContentAlignment.MiddleCenter) + 2;
+            y += Add(host, "An ARM32-ready RDP · SSH · SFTP / FTP client for Windows RT 8.1 and Windows 10/11.", M, y, CW, _sub, FontHelper.Ui(9f), 44, _bg, ContentAlignment.TopCenter) + 6;   // 2 lines even at 120+ DPI
 
             // ── FEATURED — the three engines (accent-tinted, emphasized; identical card geometry) ──
-            var feat = Card(M, y, CW, 152, featBg, featBrd);
-            host.Controls.Add(feat);
-            feat.Controls.Add(Text2("RDP — built on FreeRDP", 16, 14, CW - 32, _accent, FontHelper.Ui(12f, FontStyle.Bold), 24, featBg, ContentAlignment.MiddleLeft));
-            feat.Controls.Add(Text2("The RDP engine is FreeRDP 3.32.2 (its SDL3 client, with WinPR), built for x64 and for ARM32 Windows RT. Apache-2.0 licensed.",
-                16, 42, CW - 32, _title, FontHelper.Ui(9f), 68, featBg, ContentAlignment.TopLeft));
-            feat.Controls.Add(Link("→  github.com/FreeRDP/FreeRDP", 16, 118, CW - 32, FreeRdpUrl, FontHelper.Ui(9.5f, FontStyle.Bold), featBg));
-            y += 152 + 14;
-
-            var sshCard = Card(M, y, CW, 152, featBg, featBrd);
-            host.Controls.Add(sshCard);
-            sshCard.Controls.Add(Text2("SSH && SFTP — SSH.NET", 16, 14, CW - 32, _accent, FontHelper.Ui(12f, FontStyle.Bold), 24, featBg, ContentAlignment.MiddleLeft));
-            sshCard.Controls.Add(Text2("The SSH transport for the terminal and the SFTP browser is SSH.NET (Renci.SshNet) 2026.0.0 — MIT licensed. Terminal emulation: VtNetCore 1.0.30 (MIT).",
-                16, 42, CW - 32, _title, FontHelper.Ui(9f), 68, featBg, ContentAlignment.TopLeft));
-            sshCard.Controls.Add(Link("→  github.com/sshnet/SSH.NET", 16, 118, CW - 32, SshNetUrl, FontHelper.Ui(9.5f, FontStyle.Bold), featBg));
-            y += 152 + 14;
-
-            var ftpCard = Card(M, y, CW, 152, featBg, featBrd);
-            host.Controls.Add(ftpCard);
-            ftpCard.Controls.Add(Text2("FTP && FTPS — FluentFTP", 16, 14, CW - 32, _accent, FontHelper.Ui(12f, FontStyle.Bold), 24, featBg, ContentAlignment.MiddleLeft));
-            ftpCard.Controls.Add(Text2("The FTP and FTPS engine is FluentFTP 55.1.0, a self-contained pure-.NET client with TLS via the in-box SslStream — MIT licensed.",
-                16, 42, CW - 32, _title, FontHelper.Ui(9f), 68, featBg, ContentAlignment.TopLeft));
-            ftpCard.Controls.Add(Link("→  github.com/robinrodricks/FluentFTP", 16, 118, CW - 32, FluentFtpUrl, FontHelper.Ui(9.5f, FontStyle.Bold), featBg));
-            y += 152 + 14;
+            y += EngineCard(host, M, y, CW, featBg, featBrd, "RDP — built on FreeRDP",
+                "The RDP engine is FreeRDP 3.32.2 (its SDL3 client, with WinPR), built for x64 and for ARM32 Windows RT. Apache-2.0 licensed.",
+                "→  github.com/FreeRDP/FreeRDP", FreeRdpUrl) + 14;
+            y += EngineCard(host, M, y, CW, featBg, featBrd, "SSH && SFTP — SSH.NET",
+                "The SSH transport for the terminal and the SFTP browser is SSH.NET (Renci.SshNet) 2026.0.0 — MIT licensed. Terminal emulation: VtNetCore 1.0.30 (MIT).",
+                "→  github.com/sshnet/SSH.NET", SshNetUrl) + 14;
+            y += EngineCard(host, M, y, CW, featBg, featBrd, "FTP && FTPS — FluentFTP",
+                "The FTP and FTPS engine is FluentFTP 55.1.0, a self-contained pure-.NET client with TLS via the in-box SslStream — MIT licensed.",
+                "→  github.com/robinrodricks/FluentFTP", FluentFtpUrl) + 14;
 
             // ── Source + license ──
             var meta = Card(M, y, CW, 92, _card, _border);
@@ -115,23 +105,25 @@ namespace Finestra.UI
                 new[] { "Newtonsoft.Json 13.0.4", "MIT" },
                 new[] { "Roboto font 3.009", "SIL OFL 1.1" },   // per the TTF's own name table (roboto-classic)
             };
-            int ch = 40 + credits.Length * 24 + 8;
-            var cr = Card(M, y, CW, ch, _card, _border);
-            host.Controls.Add(cr);
-            cr.Controls.Add(Text2("OPEN-SOURCE CREDITS", 16, 12, CW - 32, _accent, FontHelper.Ui(8.25f, FontStyle.Bold), 18, _card, ContentAlignment.MiddleLeft));
-            int ry = 38;
+            var cr = new Panel();   // sized once its rows are in
+            int ry = 12;
+            ry += Add(cr, "OPEN-SOURCE CREDITS", 16, ry, CW - 32, _accent, FontHelper.Ui(8.25f, FontStyle.Bold), 18, _card, ContentAlignment.MiddleLeft) + 8;
             foreach (var row in credits)
             {
-                cr.Controls.Add(Text2(row[0], 16, ry, CW - 170, _title, FontHelper.Ui(9f), 22, _card, ContentAlignment.MiddleLeft));
-                cr.Controls.Add(Text2(row[1], CW - 152, ry, 136, _sub, FontHelper.Ui(8.5f), 22, _card, ContentAlignment.MiddleRight));
-                ry += 24;
+                int rh = Math.Max(Fit(row[0], FontHelper.Ui(9f), CW - 170, 22), Fit(row[1], FontHelper.Ui(8.5f), 136, 22));
+                cr.Controls.Add(Text2(row[0], 16, ry, CW - 170, _title, FontHelper.Ui(9f), rh, _card, ContentAlignment.MiddleLeft));
+                cr.Controls.Add(Text2(row[1], CW - 152, ry, 136, _sub, FontHelper.Ui(8.5f), rh, _card, ContentAlignment.MiddleRight));
+                ry += rh + 2;
             }
+            int ch = ry + 10;
+            MakeCard(cr, M, y, CW, ch, _card, _border);
+            host.Controls.Add(cr);
             y += ch + 14;
 
             // ── Privacy + footer ──
-            host.Controls.Add(Text2("Privacy: collects no data and makes no network calls except to the servers you configure.", M, y, CW, _sub, FontHelper.Ui(8.5f), 44, _bg, ContentAlignment.TopCenter)); y += 46;   // 2 lines even at 120+ DPI
-            host.Controls.Add(Text2("Full license texts: THIRD-PARTY-NOTICES.txt", M, y, CW, _sub, FontHelper.Ui(8.25f), 18, _bg, ContentAlignment.MiddleCenter)); y += 20;
-            host.Controls.Add(Text2("© 2026 Hamed Ghorbani · Licensed under GPL-3.0-only", M, y, CW, _sub, FontHelper.Ui(8.25f), 18, _bg, ContentAlignment.MiddleCenter)); y += 22;
+            y += Add(host, "Privacy: collects no data and makes no network calls except to the servers you configure.", M, y, CW, _sub, FontHelper.Ui(8.5f), 44, _bg, ContentAlignment.TopCenter) + 2;   // 2 lines even at 120+ DPI
+            y += Add(host, "Full license texts: THIRD-PARTY-NOTICES.txt", M, y, CW, _sub, FontHelper.Ui(8.25f), 18, _bg, ContentAlignment.MiddleCenter) + 2;
+            y += Add(host, "© 2026 Hamed Ghorbani · Licensed under GPL-3.0-only", M, y, CW, _sub, FontHelper.Ui(8.25f), 18, _bg, ContentAlignment.MiddleCenter) + 4;
 
             host.Controls.Add(new Panel { Location = new Point(0, y), Size = new Size(4, 10), BackColor = _bg });   // extend the scroll extent
             host.Height = y + 10;
@@ -143,6 +135,39 @@ namespace Finestra.UI
 
         // Absolute-positioned card layout → skip ThemedDialog's full-width row resize; just refresh the scrollbar.
         protected override void OnShown(EventArgs e) { try { Body.RelayoutContent(); } catch { } }
+
+        /// <summary>One engine card: heading, a wrapped paragraph and a link, each as tall as its font needs (at
+        /// 100%: 24, 68 and 22 tall, the card 152). Returns the card's height.</summary>
+        private int EngineCard(Control host, int x, int y, int w, Color fill, Color brd, string heading, string body, string linkText, string url)
+        {
+            var card = new Panel();
+            int cy = 14;
+            cy += Add(card, heading, 16, cy, w - 32, _accent, FontHelper.Ui(12f, FontStyle.Bold), 24, fill, ContentAlignment.MiddleLeft) + 4;
+            cy += Add(card, body, 16, cy, w - 32, _title, FontHelper.Ui(9f), 68, fill, ContentAlignment.TopLeft) + 8;
+            var link = Link(linkText, 16, cy, w - 32, url, FontHelper.Ui(9.5f, FontStyle.Bold), fill);
+            link.Height = Fit(linkText, link.Font, w - 32, 22);
+            card.Controls.Add(link);
+            cy += link.Height + 12;
+            MakeCard(card, x, y, w, cy, fill, brd);
+            host.Controls.Add(card);
+            return cy;
+        }
+
+        /// <summary>Adds a label as tall as <see cref="Fit"/> says and returns that height.</summary>
+        private static int Add(Control parent, string text, int x, int y, int w, Color color, Font font, int h, Color parentBg, ContentAlignment align)
+        {
+            var l = Text2(text, x, y, w, color, font, Fit(text, font, w, h), parentBg, align);
+            parent.Controls.Add(l);
+            return l.Height;
+        }
+
+        /// <summary>The larger of a label's 100%-scale height and the height its wrapped text needs in this font.</summary>
+        private static int Fit(string text, Font font, int w, int h)
+        {
+            var need = TextRenderer.MeasureText(text.Replace("&&", "&"), font, new Size(w, int.MaxValue),
+                TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix);
+            return Math.Max(h, need.Height);
+        }
 
         private void MetaRow(Panel card, int cy, string left, string linkText, string url, int cw)
         {
@@ -173,9 +198,11 @@ namespace Finestra.UI
             return l;
         }
 
-        private Panel Card(int x, int y, int w, int h, Color fill, Color brd)
+        private Panel Card(int x, int y, int w, int h, Color fill, Color brd) => MakeCard(new Panel(), x, y, w, h, fill, brd);
+
+        private static Panel MakeCard(Panel p, int x, int y, int w, int h, Color fill, Color brd)
         {
-            var p = new Panel { Location = new Point(x, y), Size = new Size(w, h), BackColor = fill };
+            p.Location = new Point(x, y); p.Size = new Size(w, h); p.BackColor = fill;
             using (var path = DrawHelper.RoundedRect(new Rectangle(0, 0, w, h), 12))
                 p.Region = new Region(path);
             p.Paint += (s, e) =>

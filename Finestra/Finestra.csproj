@@ -123,6 +123,7 @@
     <Compile Include="Helpers\FileLog.cs" />
     <Compile Include="Helpers\FontHelper.cs" />
     <Compile Include="Helpers\ScrollbarTheme.cs" />
+    <Compile Include="Helpers\UiScale.cs" />
     <Compile Include="Helpers\ThemedChrome.cs" />
     <Compile Include="Helpers\ThemeHelper.cs" />
     <Compile Include="Program.cs" />

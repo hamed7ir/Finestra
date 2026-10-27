@@ -161,6 +161,11 @@ namespace Finestra.UI
             base.OnShown(e);
             // width was 0 at populate time; stretch rows to the now-laid-out body width
             foreach (Control r in Body.Host.Controls) r.Width = Body.Host.ClientSize.Width;
+            // a row's height can follow its width (wrapped text, a row of chips), so stack them again the way
+            // PopulateBody did
+            int y = 6;
+            foreach (Control r in Body.Host.Controls) { r.Top = y; y += r.Height; }
+            Body.Host.Height = y + 8;
             Body.RelayoutContent();
         }
 

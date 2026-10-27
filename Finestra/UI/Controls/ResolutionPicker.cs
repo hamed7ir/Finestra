@@ -42,8 +42,9 @@ namespace Finestra.UI.Controls
         private readonly TextBox _wBox, _hBox;
         private int _activeAspect = 2;   // 16:9 default
         private bool _loading;
-        private Rectangle _portraitPill;
+        private Rectangle _portraitPill, _nativeLine, _wLabel, _hLabel, _note;
         private readonly Size _native;
+        private const string Note = "In landscape fullscreen-embed the session fills the physical screen, so portrait may letterbox or be overridden.";
 
         public ResolutionPicker(SettingsProfile s)
         {
@@ -169,7 +170,7 @@ namespace Finestra.UI.Controls
                 {
                     Text = sz.Width + "×" + sz.Height,
                     Kind = (sz.Width == _s.Width && sz.Height == _s.Height) ? RoundedButtonKind.Primary : RoundedButtonKind.Neutral,
-                    Width = 96, Height = 30, Radius = 6, Margin = new Padding(0, 0, 6, 6),
+                    Width = UiScale.Px(96), Height = UiScale.Px(30), Radius = 6, Margin = new Padding(0, 0, 6, 6),
                     Font = FontHelper.Ui(9.5f, FontStyle.Bold),
                     Enabled = _s.ResolutionMode == ResolutionMode.Preset
                 };
@@ -209,26 +210,51 @@ namespace Finestra.UI.Controls
         }
 
         // ── layout ──
+        // Top to bottom, each length its 100% value through UiScale.Px: the fonts grow with the Windows scale, so
+        // fixed pixel rows clipped the W / H boxes and the note at 150%. At 100% every number is the one it was.
         protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); Relayout(); }
         private void Relayout()
         {
             if (_mNative == null || _wWrap == null) return;   // Height set in ctor fires layout before children exist
             const int pad = 8;
             int w = ClientSize.Width;
+            int y = UiScale.Px(8), h = UiScale.Px(32);
             int bw = (w - 2 * pad - 2 * 6) / 3;
-            _mNative.SetBounds(pad, 8, bw, 32);
-            _mPreset.SetBounds(pad + bw + 6, 8, bw, 32);
-            _mCustom.SetBounds(pad + 2 * (bw + 6), 8, w - pad - (pad + 2 * (bw + 6)), 32);
+            _mNative.SetBounds(pad, y, bw, h);
+            _mPreset.SetBounds(pad + bw + 6, y, bw, h);
+            _mCustom.SetBounds(pad + 2 * (bw + 6), y, w - pad - (pad + 2 * (bw + 6)), h);
+            y += h + UiScale.Px(6);
+
+            _nativeLine = new Rectangle(pad + 2, y, w - pad - 4, UiScale.Px(20));
+            y += UiScale.Px(20) + UiScale.Px(8);
 
             int tw = (w - 2 * pad - 4 * 4) / 5;
-            for (int i = 0; i < 5; i++) _tabs[i].SetBounds(pad + i * (tw + 4), 74, tw, 28);
+            for (int i = 0; i < 5; i++) _tabs[i].SetBounds(pad + i * (tw + 4), y, tw, UiScale.Px(28));
+            y += UiScale.Px(28) + UiScale.Px(6);
 
-            _chipFlow.SetBounds(pad, 108, w - 2 * pad, 66);
+            // room for the longest aspect's chips (five), and never less than the two rows it always had
+            int perRow = Math.Max(1, (w - 2 * pad) / (UiScale.Px(96) + 6));
+            int rows = Math.Max(2, (5 + perRow - 1) / perRow);
+            int chipsH = rows * UiScale.Px(30) + (rows - 1) * 6;
+            _chipFlow.SetBounds(pad, y, w - 2 * pad, chipsH);
+            y += chipsH + UiScale.Px(8);
 
-            _wWrap.SetBounds(30, 182, 100, 30);
-            _hWrap.SetBounds(166, 182, 100, 30);
+            _wLabel = new Rectangle(8, y + UiScale.Px(6), UiScale.Px(18), UiScale.Px(20));
+            _wWrap.SetBounds(8 + UiScale.Px(22), y, UiScale.Px(100), UiScale.Px(30));
+            _hLabel = new Rectangle(_wWrap.Right + UiScale.Px(14), y + UiScale.Px(6), UiScale.Px(18), UiScale.Px(20));
+            _hWrap.SetBounds(_hLabel.Left + UiScale.Px(22), y, UiScale.Px(100), UiScale.Px(30));
+            y += UiScale.Px(30) + UiScale.Px(14);
 
-            _portraitPill = new Rectangle(pad, 226, 46, 24);
+            _portraitPill = new Rectangle(pad, y, UiScale.Px(46), UiScale.Px(24));
+            y += UiScale.Px(24) + UiScale.Px(8);
+
+            int noteH = UiScale.Px(34);
+            using (var f = FontHelper.Ui(8.5f))
+                noteH = Math.Max(noteH, TextRenderer.MeasureText(Note, f, new Size(Math.Max(1, w - 2 * pad), int.MaxValue),
+                    TextFormatFlags.NoPrefix | TextFormatFlags.WordBreak).Height);
+            _note = new Rectangle(pad, y, w - 2 * pad, noteH);
+            Height = y + noteH + UiScale.Px(8);
+            Invalidate();
         }
 
         // ── portrait toggle (owner-drawn; hit-tested) ──
@@ -256,11 +282,11 @@ namespace Finestra.UI.Controls
 
             // Native line (bright when active, dim otherwise)
             string nativeStr = _native.Width > 0 ? "Native: " + _native.Width + " × " + _native.Height + "   (resolved per-device at connect)" : "Native: (undetected)";
-            DrawText(g, nativeStr, pad + 2, 46, ClientSize.Width - pad - 4, 20, native ? Fg : Sub, FontHelper.Ui(10f, native ? FontStyle.Bold : FontStyle.Regular));
+            DrawText(g, nativeStr, _nativeLine, native ? Fg : Sub, FontHelper.Ui(10f, native ? FontStyle.Bold : FontStyle.Regular));
 
             // Custom labels (compact W / H before each box)
-            DrawText(g, "W", 8, 188, 18, 20, custom ? Fg : Sub, FontHelper.Ui(11f, FontStyle.Bold));
-            DrawText(g, "H", 144, 188, 18, 20, custom ? Fg : Sub, FontHelper.Ui(11f, FontStyle.Bold));
+            DrawText(g, "W", _wLabel, custom ? Fg : Sub, FontHelper.Ui(11f, FontStyle.Bold));
+            DrawText(g, "H", _hLabel, custom ? Fg : Sub, FontHelper.Ui(11f, FontStyle.Bold));
 
             // Portrait pill + label + effective
             bool portraitEnabled = !native;
@@ -270,15 +296,14 @@ namespace Finestra.UI.Controls
             using (var p = DrawHelper.RoundedRect(_portraitPill, _portraitPill.Height / 2)) g.FillPath(b, p);
             int kd = _portraitPill.Height - 6, kx = portraitOn ? _portraitPill.Right - kd - 3 : _portraitPill.Left + 3;
             using (var kb = new SolidBrush(Color.White)) g.FillEllipse(kb, new Rectangle(kx, _portraitPill.Top + 3, kd, kd));
-            DrawText(g, "Portrait (swap W↔H)", _portraitPill.Right + 10, _portraitPill.Top, 200, _portraitPill.Height, portraitEnabled ? Fg : Sub, FontHelper.Ui(10f));
+            DrawText(g, "Portrait (swap W↔H)", new Rectangle(_portraitPill.Right + 10, _portraitPill.Top, UiScale.Px(200), _portraitPill.Height), portraitEnabled ? Fg : Sub, FontHelper.Ui(10f));
 
             var eff = EffectiveSize();
             string effStr = eff.Width > 0 ? "→ " + eff.Width + " × " + eff.Height : "→ —";
-            DrawText(g, effStr, ClientSize.Width - pad - 150, _portraitPill.Top, 150, _portraitPill.Height, Accent, FontHelper.Ui(10.5f, FontStyle.Bold), right: true);
+            DrawText(g, effStr, new Rectangle(ClientSize.Width - pad - UiScale.Px(150), _portraitPill.Top, UiScale.Px(150), _portraitPill.Height), Accent, FontHelper.Ui(10.5f, FontStyle.Bold), right: true);
 
             // Note
-            DrawText(g, "In landscape fullscreen-embed the session fills the physical screen, so portrait may letterbox or be overridden.",
-                pad, 258, ClientSize.Width - 2 * pad, 34, Sub, FontHelper.Ui(8.5f), wrap: true);
+            DrawText(g, Note, _note, Sub, FontHelper.Ui(8.5f), wrap: true);
         }
 
         private Size EffectiveSize()
@@ -289,11 +314,11 @@ namespace Finestra.UI.Controls
             return new Size(w, h);
         }
 
-        private static void DrawText(Graphics g, string text, int x, int y, int w, int h, Color color, Font f, bool right = false, bool wrap = false)
+        private static void DrawText(Graphics g, string text, Rectangle r, Color color, Font f, bool right = false, bool wrap = false)
         {
             var flags = TextFormatFlags.NoPrefix | (right ? TextFormatFlags.Right : TextFormatFlags.Left)
                         | (wrap ? TextFormatFlags.WordBreak | TextFormatFlags.Top : TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
-            using (f) TextRenderer.DrawText(g, text, f, new Rectangle(x, y, w, h), color, flags);
+            using (f) TextRenderer.DrawText(g, text, f, r, color, flags);
         }
     }
 }

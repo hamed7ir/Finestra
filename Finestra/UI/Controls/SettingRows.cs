@@ -149,14 +149,18 @@ namespace Finestra.UI.Controls
     {
         private readonly Panel _wrap;
         private readonly TextBox _box;
+        private readonly int _labelH;
         public event Action Changed;
 
         public string Value { get => _box.Text; set => _box.Text = value ?? ""; }
 
         public TextRow(string label, string value, bool numeric = false, bool password = false) : base(label)
         {
-            Height = 62;
             _box = new TextBox { BorderStyle = BorderStyle.None, Font = FontHelper.Ui(11f) };
+            // The fonts are in points, so they grow with Windows scaling while a fixed 62px row does not: from 125%
+            // up the label ran behind the box. Size the row from both fonts; at 100% this still comes out 62.
+            using (var f = FontHelper.Ui(9.5f)) _labelH = TextRenderer.MeasureText("Ag", f).Height;
+            Height = Math.Max(62, 4 + _labelH + 3 + _box.PreferredHeight + 12 + 6);
             if (password) _box.UseSystemPasswordChar = true;
             _box.TextChanged += (s, e) => Changed?.Invoke();
             if (numeric) _box.KeyPress += (s, e) => { if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar)) e.Handled = true; };
@@ -188,7 +192,7 @@ namespace Finestra.UI.Controls
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics; g.Clear(Bg);
-            var r = new Rectangle(8, 4, Width - 16, 20);
+            var r = new Rectangle(8, 4, Width - 16, Math.Max(20, _labelH));
             using (var f = FontHelper.Ui(9.5f))
                 TextRenderer.DrawText(g, LabelText, f, r, Sub,
                     TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
